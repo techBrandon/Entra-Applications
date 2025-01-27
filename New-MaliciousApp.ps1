@@ -3,7 +3,7 @@
 
 $graphApp = New-MGApplication -DisplayName 'Malicious App'
 $graphSPParameter = @{"AppId" = "$($graphApp.AppId)"}
-$graphSP = New-MgServicePrincipal -BodyParameter $graphSPParameter
+New-MgServicePrincipal -BodyParameter $graphSPParameter
 
 $passwordCred = @{
     displayName = 'Application Persistence 4eva'

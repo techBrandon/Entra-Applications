@@ -11,7 +11,7 @@ $appID = ''
 
 # Password or "Secret Text" Generated when creating an application client secret.
 # Example 40 character random password: "dwc8Q~sDrFwLecsMdkS6FxAMi.aI.iUmwUvQ5eoS"
-$clearTextPassword = 'xyz'
+$clearTextPassword = ''
 $securePassword = ConvertTo-SecureString -String $clearTextPassword -AsPlainText -Force
 
 $loginCredential = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList $appID, $securePassword
