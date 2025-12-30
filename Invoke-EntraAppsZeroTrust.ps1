@@ -100,7 +100,56 @@ Get-MgRoleManagementDirectoryRoleDefinition | Where-Object {$_.IsBuiltIn -eq $fa
 
 # Section 2: Inactive applications don't have highly privileged Microsoft Graph API permissions
 
+# Identify applications with highly privileged permissions - Code adapted from Get-PrivilegedApps.ps1
+# List of highly privileged application permissions. Permissions can be added from: https://graphpermissions.merill.net/permission/
+# or https://learn.microsoft.com/en-us/graph/migrate-azure-ad-graph-permissions-differences has the Id's for Azure AD Graph as well.
+$highlyPrivilegedPermissions = @(
+    [PSCustomObject]@{Permission = 'Application.ReadWrite.All'; Id = "1bfefb4e-e0b5-418b-a88f-73c46d2cc8e9" },
+    [PSCustomObject]@{Permission = 'Application.ReadWrite.All'; Id = "1cda74f2-2616-4834-b122-5cb1b07f8a59" } # Windows Azure Active Directory,
+    [PSCustomObject]@{Permission = 'AppRoleAssignment.ReadWrite.All'; Id = "06b708a9-e830-4db3-a914-8e69da51d44f" },
+    [PSCustomObject]@{Permission = 'Calendars.ReadWrite'; Id = "ef54d2bf-783f-4e0f-bca1-3210c0444d99" },
+    [PSCustomObject]@{Permission = 'Directory.ReadWrite.All'; Id = "19dbc75e-c2e2-444c-a770-ec69d8559fc7" },
+    [PSCustomObject]@{Permission = 'Directory.ReadWrite.All'; Id = "78c8a3c8-a07e-4b9e-af1b-b5ccab50a175" } # Windows Azure Active Directory,
+    [PSCustomObject]@{Permission = 'Directory.Read.All'; Id = "7ab1d382-f21e-4acd-a863-ba3e13f7da61" },
+    [PSCustomObject]@{Permission = 'Directory.Read.All'; Id = "5778995a-e1bf-45b8-affa-663a9f3f4d04" } # Windows Azure Active Directory,
+    [PSCustomObject]@{Permission = 'Exchange.ManageAsApp'; Id = "dc50a0fb-09a3-484d-be87-e023b12c6440" } # Exchange Online,
+    [PSCustomObject]@{Permission = 'Files.ReadWrite.All'; Id = "75359482-378d-4052-8f01-80520e7db3cd" },
+    [PSCustomObject]@{Permission = 'GroupMember.ReadWrite.All'; Id = "dbaae8cf-10b5-4b86-a4a1-f871c94c6695" },
+    [PSCustomObject]@{Permission = 'Group.ReadWrite.All'; Id = "62a82d76-70ea-41e2-9197-370581804d09" },
+    [PSCustomObject]@{Permission = 'Mail.ReadWrite'; Id = "e2a3a72e-5f79-4c64-b1b1-878b674786c9" },
+    [PSCustomObject]@{Permission = 'Mail.Send'; Id = "b633e1c5-b582-4048-a93e-9f11b44c7e96" },
+    [PSCustomObject]@{Permission = 'RoleManagement.ReadWrite.Directory'; Id = "9e3f62cf-ca93-4989-b6ce-bf83c28f9fe8" },
+    [PSCustomObject]@{Permission = 'ServicePrincipalEndPoint.ReadWrite.All'; Id = "89c8469c-83ad-45f7-8ff2-6e3d4285709e" },
+    [PSCustomObject]@{Permission = 'Sites.ReadWrite.All'; Id = "9492366f-7969-46a4-8d15-ed1a20078fff" },
+    [PSCustomObject]@{Permission = 'User.Export.All'; Id = "405a51b5-8d8d-430b-9842-8be4b0e9f324" },
+    [PSCustomObject]@{Permission = 'User.ReadWrite.All'; Id = "741f803b-c850-494e-b5df-cde7c675a1ca" },
+    [PSCustomObject]@{Permission = 'User.Read.All'; Id = "df021288-bdef-4463-88db-98f22de89214" }
+)
+<# Options for searching servicePrincipals:
+ 1. Retrieves only Enterprise apps but won't include apps w/o Tags (ie: may be missing custom applications)
+ 2. Retrieves servicePrincipals with a cooresponding application in the tenant (ie: a more complete list of custom applications but may have issues with multi-tenant applications)
+ 3. Retrieves ALL servicePrincipals including Microsoft built-in apps (ie: this may include false positives and will take much longer to run in large tenants)
+    *Note: Option 3 is the most secure method of searching for rogue applications that may utilize advanced evasion techniques
+#>
+$servicePrincipalArray = Get-MgServicePrincipal -All -Filter "tags/Any(x: x eq 'WindowsAzureActiveDirectoryIntegratedApp')" # Option 1
+<# Option 2
+$applicationArray = Get-MgApplication -All -Property AppId
+$allServicePrincipals = Get-MgServicePrincipal -All
+$servicePrincipalArray = $allServicePrincipals | Where-Object{$applicationArray.AppId -contains $_.AppId}
+#>
+#$servicePrincipalArray = Get-MgServicePrincipal -All # Option 3
+
+foreach ($SP in $servicePrincipalArray) {
+    [array]$roleAssignments = Get-MgServicePrincipalAppRoleAssignment -All -ServicePrincipalId $SP.Id
+    ForEach ($roleAssignment in $roleAssignments) {
+        if ($highlyPrivilegedPermissions.Id -contains $roleAssignment.AppRoleId) {
+            Write-Host $SP.DisplayName "is privileged due to this permission:" ($highlyPrivilegedPermissions | Where-Object { $_.Id -eq $roleAssignment.AppRoleId }).Permission
+        }
+    }
+}
+
 # Inactive is the keyword for this section. What is inactive? No sign-ins in 30/60/90/180 days? No activity at all? This needs to be defined.
+# TODO: Once inactive is defined, the below can be modified to identify inactive applications with results from highly privileged permissions code above. This is currently disconnected.
 
 # No sign-in logs (how long do they go back?) This might not scale well in large tenants.
 Get-MgAuditLogSignIn -Filter "appId eq 'APPID'"
@@ -123,9 +172,86 @@ Get-MgServicePrincipal | Where-Object AccountEnabled -eq $False
 
 # Section 3: Inactive applications don't have highly privileged built-in roles
 
-    # Same as above, need to define inactive.
+# Identity applications assigned to privileged built-in roles - Code adapted from Get-AppsInPrivilegedRoles.ps1
+# List of highly privileged roles that are searched for membership. Roles can be added from: https://learn.microsoft.com/en-us/entra/identity/role-based-access-control/permissions-reference
+# This list includes all roles tagged as "PRIVILEGED" as of January 2025
+$highlyPrivilegedRoles = @(
+    [PSCustomObject]@{RoleName = "Application Administrator"; RoleID = "9b895d92-2cd3-44c7-9d02-a6ac2d5ea5c3" },
+    [PSCustomObject]@{RoleName = "Application Developer"; RoleID = "cf1c38e5-3621-4004-a7cb-879624dced7c" },
+    [PSCustomObject]@{RoleName = "Attribute Provisioning Administrator"; RoleID = "ecb2c6bf-0ab6-418e-bd87-7986f8d63bbe" },
+    [PSCustomObject]@{RoleName = "Authentication Administrator"; RoleID = "c4e39bd9-1100-46d3-8c65-fb160da0071f" },
+    [PSCustomObject]@{RoleName = "Authentication Extensibility Administrator"; RoleID = "25a516ed-2fa0-40ea-a2d0-12923a21473a" },
+    [PSCustomObject]@{RoleName = "B2C IEF Keyset Administrator"; RoleID = "aaf43236-0c0d-4d5f-883a-6955382ac081" },
+    [PSCustomObject]@{RoleName = "Cloud Application Administrator"; RoleID = "158c047a-c907-4556-b7ef-446551a6b5f7" },
+    [PSCustomObject]@{RoleName = "Cloud Device Administrator"; RoleID = "7698a772-787b-4ac8-901f-60d6b08affd2" },
+    [PSCustomObject]@{RoleName = "Conditional Access Administrator"; RoleID = "b1be1c3e-b65d-4f19-8427-f6fa0d97feb9" },
+    [PSCustomObject]@{RoleName = "Directory Writers"; RoleID = "9360feb5-f418-4baa-8175-e2a00bac4301" },
+    [PSCustomObject]@{RoleName = "Domain Name Administrator"; RoleID = "8329153b-31d0-4727-b945-745eb3bc5f31" },
+    [PSCustomObject]@{RoleName = "External Identity Provider Administrator"; RoleID = "be2f45a1-457d-42af-a067-6ec1fa63bc45" },
+    [PSCustomObject]@{RoleName = "Global Administrator"; RoleID = "62e90394-69f5-4237-9190-012177145e10" },
+    [PSCustomObject]@{RoleName = "Global Reader"; RoleID = "f2ef992c-3afb-46b9-b7cf-a126ee74c451" },
+    [PSCustomObject]@{RoleName = "Helpdesk Administrator"; RoleID = "729827e3-9c14-49f7-bb1b-9608f156bbb8" },
+    [PSCustomObject]@{RoleName = "Hybrid Identity Administrator"; RoleID = "8ac3fc64-6eca-42ea-9e69-59f4c7b60eb2" },
+    [PSCustomObject]@{RoleName = "Intune Administrator"; RoleID = "3a2c62db-5318-420d-8d74-23affee5d9d5" },
+    [PSCustomObject]@{RoleName = "Lifecycle Workflows Administrator"; RoleID = "59d46f88-662b-457b-bceb-5c3809e5908f" },
+    [PSCustomObject]@{RoleName = "Partner Tier1 Support"; RoleID = "4ba39ca4-527c-499a-b93d-d9b492c50246" },
+    [PSCustomObject]@{RoleName = "Partner Tier2 Support"; RoleID = "e00e864a-17c5-4a4b-9c06-f5b95a8d5bd8" },
+    [PSCustomObject]@{RoleName = "Password Administrator"; RoleID = "966707d0-3269-4727-9be2-8c3a10f19b9d" },
+    [PSCustomObject]@{RoleName = "Privileged Authentication Administrator"; RoleID = "7be44c8a-adaf-4e2a-84d6-ab2649e08a13" },
+    [PSCustomObject]@{RoleName = "Privileged Role Administrator"; RoleID = "e8611ab8-c189-46e8-94e1-60213ab1f814" },
+    [PSCustomObject]@{RoleName = "Security Administrator"; RoleID = "194ae4cb-b126-40b2-bd5b-6091b380977d" },
+    [PSCustomObject]@{RoleName = "Security Operator"; RoleID = "5f2222b1-57c3-48ba-8ad5-d4759f1fde6f" },
+    [PSCustomObject]@{RoleName = "Security Reader"; RoleID = "5d6b6bb7-de71-4623-b4af-96380a352509" },
+    [PSCustomObject]@{RoleName = "User Administrator"; RoleID = "fe930be7-5e62-47db-91af-98c3a49a38b1" }
+)
+#}
 
-# Section 4: App registrations use safe redirect URIs
+# Get all servicePrincipals in the tenant
+$servicePrincipalArray = Get-MgServicePrincipal -All
+
+# Get all assigned roles in the tenant. Returns ID for the principal object and role
+$roleArray = Get-MgRoleManagementDirectoryRoleAssignment -All
+
+# Get all groups in the tenant. This is needed if role membership is granted via role-assignable group
+$groupArray = Get-MgGroup -All -ExpandProperty TransitiveMembers
+
+# Walks through all membership entries in the roleArray, checks to see if the role (RoleDefinitionId) is one of the highly privileged roles.
+foreach ($entry in $roleArray) {
+    foreach ($role in $highlyPrivilegedRoles) {
+        if ($role.RoleId -eq $entry.RoleDefinitionId) {
+            # Found membership in a highly privileged role
+            if ($servicePrincipalArray.Id -contains $entry.PrincipalId) {
+                # Found membership in a highly privileged role that is a servicePrincipal
+                $privSP = $servicePrincipalArray | Where-Object { $_.Id -eq $entry.PrincipalId }
+                Write-Host "$($privSP.DisplayName) is a member of this privileged role: $($role.RoleName)"
+                if ($privSP.ServicePrincipalType -eq "ManagedIdentity") {
+                    # Found Managed Identity servicePrincipal
+                    Write-Host "$($privSP.DisplayName) is a Managed Identity"
+                }
+            }
+            if ($groupArray.Id -contains $entry.PrincipalId) {
+                # Found membership in a highly privileged role that is a group
+                $privGroup = $groupArray | Where-Object { $_.Id -eq $entry.PrincipalId }
+                $privGroupMembers = $privGroup.TransitiveMembers.Id
+                foreach ($privMemberId in $privGroupMembers) {
+                    if ($servicePrincipalArray.Id -contains $privMemberId) {
+                        # Found group member that is a servicePrincipal
+                        $privSP = $servicePrincipalArray | Where-Object { $_.Id -eq $privMemberId }
+                        Write-Host "$($privSP.DisplayName) is a member of $($privGroup.DisplayName) which is a member of this privileged role: $($role.RoleName)"
+                        if ($privSP.ServicePrincipalType -eq "ManagedIdentity") {
+                            # Found Managed Identity servicePrincipal
+                            Write-Host "$($privSP.DisplayName) is a Managed Identity"
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+# Same as above, need to define inactive & connect the two parts of this Section.
+
+# Sections 4 & 5: App registrations and Service principals use safe redirect URIs
 
 $apps = Get-MgApplication -All
 $sps = Get-MgServicePrincipal -All
@@ -192,20 +318,84 @@ $results | Where-Object {
 # $results | Export-Csv -Path ".\TenantRedirectURIReport.csv" -NoTypeInformation
 
 
-# Section 5: Service principals use safe redirect URIs
-
-    # Covered in Section 4
 
 # Section 6: App registrations must not have dangling or abandoned domain redirect URIs
 
+# Use the $results object from above
+
+# Code in ChatGPT, broken into sections:
+# 1. DNS does not resolve
+foreach ($entry in $results) {
+    try {
+        $response = Resolve-DnsName -Name ($entry.RedirectUri -replace "^(https?://)?([^/]+)(/.*)?$",'$2') -ErrorAction Stop
+        # If we get here, DNS resolved successfully
+    }
+    catch {
+        Write-Host "DNS does not resolve for $($entry.RedirectUri) in $($entry.ObjectType) $($entry.DisplayName)"
+    }
+}
+# 2. Reclaimable cloud hosting
+$reclaimableHosts = @(
+    "azurewebsites.net",
+    "cloudapp.net",
+    "herokuapp.com",
+    "appspot.com",
+    "ngrok.io",
+    "azurefd.net",
+    "azurestaticapps.net",
+    "cloudfront.net",
+    "elasticbeanstalk.com",
+    "netlify.app",
+    "vercel.app"
+    # Add more as needed
+)
+foreach ($entry in $results) {
+    $uriHost = ($entry.RedirectUri -replace "^(https?://)?([^/]+)(/.*)?$",'$2')
+    foreach ($cloudHost in $reclaimableHosts) {
+        if ($uriHost -like "*.$cloudHost" -or $uriHost -eq $cloudHost) {
+            Write-Host "Reclaimable cloud hosting detected for $($entry.RedirectUri) in $($entry.ObjectType) $($entry.DisplayName)"
+        }
+    }
+}
+# 3. not in ChatGPT but, I want to check return codes (200, 301, etc) to see if the URL is active
+foreach ($entry in $results) {
+    try {
+        $response = Invoke-WebRequest -Uri $entry.RedirectUri -Method Head -UseBasicParsing -ErrorAction Stop
+        if ($response.StatusCode -ge 400) {
+            Write-Host "Inactive redirect URI (status code $($response.StatusCode)) for $($entry.RedirectUri) in $($entry.ObjectType) $($entry.DisplayName)"
+        }
+    }
+    catch {
+        Write-Host "Error accessing $($entry.RedirectUri) in $($entry.ObjectType) $($entry.DisplayName): $($_.Exception.Message)"
+    }
+}
+
 # Section 7: Resource-specific consent to application is restricted
+# https://learn.microsoft.com/en-us/microsoftteams/platform/graph-api/rsc/preapproval-instruction-docs
+Get-MgPolicyAuthorizationPolicy | Select-Object ResourceSpecificConsentPolicy
+# Blanket policy configuration should be set to "ManagedByMicrosoft"
+Get-MgBetaTeamsRscConfiguration -All
+Get-MGBetaChatRscConfiguration -All
+# Pre-approval policies should be checked for elevated permission sets
+Get-MgBetaTeamAppPreApproval -All
 
 # Section 8: Workload Identities are not assigned privileged roles
 
+    # Workload identities are represented as service principals with ServicePrincipalType = "ManagedIdentity"
+    # Therefore, section 3 code above already identifies workload identities in privileged roles.
+
 # Section 9: Enterprise applications must require explicit assignment or scoped provisioning
+# App role assignment required should be True
+Get-MgServicePrincipal -All | Where-Object { $_.AppRoleAssignmentRequired -eq $false }
+
+# Scoped provisioning should be used where possible
+Get-MgServicePrincipal -All | Get-MgServicePrincipalSynchronizationJob -ServicePrincipalId $_.Id
+    # more in chatgpt but needs to be fleshed out
 
 
-### Functions:
+# ----------------------------
+# Functions
+# ----------------------------
 
 function Expand-EntraRoleGroupMembers {
     param(
