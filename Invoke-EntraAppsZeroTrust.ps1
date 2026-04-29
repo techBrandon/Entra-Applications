@@ -6,13 +6,946 @@ Invokes Entra Application Checks in support of a Zero Trust approach to applicat
 Inspired by https://learn.microsoft.com/en-us/entra/fundamentals/zero-trust-protect-engineering-systems
 This script is intended to invoke various Entra Application checks in support of a Zero Trust approach to application security.
 Each check is intended to identify potentially risky configurations that may lead to privilege escalation or other security concerns.
-The checks focus on application owners, credentials (certificates & secrets), and permissions.
+The checks focus on tenant configurations, application owners, credentials (certificates & secrets), and permissions.
 .NOTES
 Version: 1.0
-Updated: 20251211
+Updated: 20260119
 Author: Brandon Colley
 Email: ColleyBrandon@pm.me
 #>
+
+# ===========================================================================================
+# CENTRAL DATA COLLECTOR
+# ===========================================================================================
+
+# Script-level cache for collected artifacts
+$script:EntraCache = @{
+    Timestamp = $null
+    Data      = $null
+}
+
+<#
+.SYNOPSIS
+Collects all Entra application and role data required for Zero Trust checks.
+
+.DESCRIPTION
+Gathers applications, service principals, roles, groups, policies, and optionally sign-ins.
+Results are cached in $script:EntraCache to avoid redundant API calls.
+
+.PARAMETER TenantId
+Optional tenant ID. If omitted, uses current connection.
+
+.PARAMETER ForceRefresh
+Skip cache and re-fetch all data from Graph.
+
+.PARAMETER IncludeSignIns
+Collect sign-in logs (optional, time-consuming on large tenants).
+
+.OUTPUTS
+[hashtable] with keys: Applications, ServicePrincipals, RoleDefinitions, RoleAssignments,
+Groups, Policies, RedirectUriResults
+
+.EXAMPLE
+$data = Collect-EntraArtifacts -TenantId 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx'
+$data.Applications | Measure-Object
+#>
+function Collect-EntraArtifacts {
+    param(
+        [string]$TenantId,
+        [switch]$ForceRefresh,
+        [switch]$IncludeSignIns
+    )
+
+    # Check cache validity
+    if (-not $ForceRefresh -and $script:EntraCache.Timestamp -and 
+        ((Get-Date) - $script:EntraCache.Timestamp).TotalMinutes -lt 30) {
+        Write-Verbose "Returning cached artifacts (collected at $($script:EntraCache.Timestamp))"
+        return $script:EntraCache.Data
+    }
+
+    Write-Verbose "Collecting Entra artifacts..."
+
+    # Ensure Graph connection
+    $ctx = Get-MgContext
+    if (-not $ctx) {
+        Connect-MgGraph -TenantId $TenantId -Scopes 'Application.Read.All', 'Directory.Read.All'
+    }
+
+    try {
+        $artifacts = @{
+            Applications        = @()
+            ServicePrincipals   = @()
+            RoleDefinitions     = @()
+            RoleAssignments     = @()
+            Groups              = @()
+            #AppRoleAssignments  = @()
+            Policies            = @()
+            SignIns             = @()
+            Error               = $null
+        }
+
+        Write-Verbose "Fetching applications..."
+        $artifacts.Applications = Get-MgApplication -All -Property * -ExpandProperty Owners -ErrorAction Stop
+
+        Write-Verbose "Fetching service principals..."
+        $artifacts.ServicePrincipals = Get-MgServicePrincipal -All -Property * -ExpandProperty Owners -ErrorAction Stop
+
+        Write-Verbose "Fetching role definitions..."
+        $artifacts.RoleDefinitions = Get-MgRoleManagementDirectoryRoleDefinition -All -ErrorAction Stop
+
+        Write-Verbose "Fetching role assignments..."
+        $artifacts.RoleAssignments = Get-MgRoleManagementDirectoryRoleAssignment -All -ErrorAction Stop
+
+        Write-Verbose "Fetching groups with transitive members..."
+        $artifacts.Groups = Get-MgGroup -All -ExpandProperty TransitiveMembers -ErrorAction Stop
+
+        #Write-Verbose "Fetching app role assignments..."
+        #$artifacts.AppRoleAssignments = Get-MgServicePrincipalAppRoleAssignment -All -ErrorAction Stop
+
+        Write-Verbose "Fetching authorization policies..."
+        $artifacts.Policies = Get-MgPolicyAuthorizationPolicy -ErrorAction SilentlyContinue
+
+        if ($IncludeSignIns) {
+            Write-Verbose "Fetching sign-in logs (this may take a while)..."
+            $artifacts.SignIns = Get-MgAuditLogSignIn -All -ErrorAction Stop
+        }
+
+        # Cache the results
+        $script:EntraCache.Data = $artifacts
+        $script:EntraCache.Timestamp = Get-Date
+
+        Write-Verbose "Artifact collection complete. Cached until 30 minutes elapse."
+        return $artifacts
+    }
+    catch {
+        $artifacts.Error = $_
+        Write-Error "Failed to collect artifacts: $_"
+        return $artifacts
+    }
+}
+
+# ===========================================================================================
+# SECTION 1: Creating new applications and service principals is restricted to privileged users
+# ===========================================================================================
+
+<#
+.SYNOPSIS
+Tests Entra app registration and consent policies.
+
+.DESCRIPTION
+Validates:
+- Whether users can register applications
+- User consent policy settings
+- Application Developer role members
+
+.LINK
+https://learn.microsoft.com/en-us/entra/fundamentals/zero-trust-protect-engineering-systems#creating-new-applications-and-service-principals-is-restricted-to-privileged-users
+
+.PARAMETER Data
+Collected artifacts (from Collect-EntraArtifacts). If omitted, collects on-demand.
+
+.OUTPUTS
+[PSCustomObject[]] with properties: Control, Setting, Status, Details
+
+.EXAMPLE
+Test-EntraAppRegistrationPolicy -Data $artifacts
+#>
+function Test-EntraAppRegistrationPolicy {
+    param(
+        [hashtable]$Data
+    )
+
+    if (-not $Data) {
+        Write-Verbose "No data provided; collecting artifacts..."
+        $Data = Collect-EntraArtifacts
+    }
+
+    # Initialize all 3 checks with defaults
+    $check1 = [PSCustomObject]@{
+        Control = "EA-101"
+        Setting = "Users can register applications"
+        Status  = "ERROR"
+        Description = "Unable to evaluate"
+        Details = @()
+    }
+    
+    $check2 = [PSCustomObject]@{
+        Control = "EA-102"
+        Setting = "User consent policy"
+        Status  = "ERROR"
+        Description = "Unable to evaluate"
+        Details = @()
+    }
+    
+        $check3 = [PSCustomObject]@{
+            Control = "EA-103"
+            Setting = "Application Developer role members"
+            Status  = "ERROR"
+            Description = "Unable to evaluate"
+            Details = @()
+        }
+
+    $check4 = [PSCustomObject]@{
+        Control = "EA-104"
+        Setting = "Application owners"
+        Status  = "ERROR"
+        Description = "Unable to evaluate"
+        Details = @()
+    }
+
+    $check5 = [PSCustomObject]@{
+        Control = "EA-105"
+        Setting = "Service principal owners"
+        Status  = "ERROR"
+        Description = "Unable to evaluate"
+        Details = @()
+    }
+
+    try {
+        if ($Data.Policies) {
+            $authPolicy = $Data.Policies
+
+            # Check if users can register applications
+            $canRegister = $authPolicy.DefaultUserRolePermissions.AllowedToCreateApps
+            
+            if ($canRegister -eq $true) {
+                $check1.Status = "FINDING"
+                $check1.Description = "Users can create app registrations"
+            }
+            elseif ($canRegister -eq $false) {
+                $check1.Status = "PASS"
+                $check1.Description = "Users cannot create app registrations"
+            }
+            else {
+                $check1.Status = "UNKNOWN"
+                $check1.Description = "Unable to determine if users can create app registrations"
+            }
+
+            # Check user consent policy
+            $userConsent = $authPolicy.DefaultUserRolePermissions.PermissionGrantPoliciesAssigned
+            $consentStatus = switch -Regex ($userConsent) {
+                'ManagePermissionGrantsForSelf.microsoft-user-default-recommended' { 
+                    @("FINDING", "Let Microsoft manage consent settings (Recommended)")
+                    break
+                }
+                'ManagePermissionGrantsForSelf.microsoft-user-default-low' { 
+                    @("FINDING", "Allow user consent for verified publishers")
+                    break
+                }
+                default {
+                    if ($userConsent -and $userConsent -notcontains 'ManagePermissionGrantsForSelf') {
+                        @("PASS", "Do not allow user consent")
+                    }
+                    else {
+                        @("UNKNOWN", "Unknown consent setting: $($userConsent -join ', ')")
+                    }
+                }
+            }
+
+            $check2.Status = $consentStatus[0]
+            $check2.Description = $consentStatus[1]
+        }
+
+        # Check Application Developer role members
+        # TODO: Return WHO is assigned this role. Expand groups. Use Details property.
+        if ($Data.RoleDefinitions -and $Data.RoleAssignments) {
+            $appDevRole = $Data.RoleDefinitions | Where-Object { $_.DisplayName -eq "Application Developer" }
+            if ($appDevRole) {
+                $appDevAssignments = $Data.RoleAssignments | Where-Object { $_.RoleDefinitionId -eq $appDevRole.Id }
+                if ($appDevAssignments.Count -gt 0) {
+                    $check3.Status = "FINDING"
+                    $check3.Description = "Count: $($appDevAssignments.Count); can override registration restrictions"
+                    $check3.Details = $appDevAssignments
+                }
+                else {
+                    $check3.Status = "PASS"
+                    $check3.Description = "Count: 0; Application Developer role has no members"
+                }
+            }
+            else {
+                $check3.Status = "UNKNOWN"
+                $check3.Description = "Application Developer role not found"
+            }
+        }
+
+        # Check for application owners
+        if ($Data.Applications) {
+            $appsWithOwners = $Data.Applications | Where-Object { $_.Owners }
+            $appsWithoutOwners = $Data.Applications | Where-Object { -not $_.Owners }
+            if ($appsWithOwners.Count -gt 0) {
+                $check4.Status = "FINDING"
+                $check4.Description = "Count: $($appsWithOwners.Count); applications with owners exist. Count: $($appsWithoutOwners.Count); applications without owners."
+                $check4.Details = $appsWithOwners
+            }
+            else {
+                $check4.Status = "FINDING"
+                $check4.Description = "No applications have assigned owners. Count: $($appsWithoutOwners.Count); applications without owners."
+            }
+        }
+        # Check for service principal owners
+        if ($Data.ServicePrincipals) {
+            $spsWithOwners = $Data.ServicePrincipals | Where-Object { $_.Owners }
+            $spsWithoutOwners = $Data.ServicePrincipals | Where-Object { -not $_.Owners }
+            if ($spsWithOwners.Count -gt 0) {
+                $check5.Status = "FINDING"
+                $check5.Description = "Count: $($spsWithOwners.Count); service principals with owners exist. Count: $($spsWithoutOwners.Count); service principals without owners."
+                $check5.Details = $spsWithOwners
+            }
+            else {
+                $check5.Status = "FINDING"
+                $check5.Description = "No service principals have assigned owners. Count: $($spsWithoutOwners.Count); service principals without owners."
+                }
+        }
+
+        # TODO: Return WHO is assigned (cloud) application administrator roles . Write reusable code and replace appdev code above.
+        # Get-MgRoleManagementDirectoryRoleAssignment | Where-Object roleDefinitionId -in @('9b895d92-2cd3-44c7-9d02-a6ac2d5ea5c3','158c047a-c907-4556-b7ef-446551a6b5f7')
+
+        # TODO: Return Custom Role(s) with permissions to create applications
+    }
+    catch {
+        Write-Error "Error during Section 1 checks: $_"
+    }
+
+    return @($check1, $check2, $check3, $check4, $check5)
+}
+
+# ===========================================================================================
+# SECTION 2: Inactive applications don't have highly privileged Microsoft Graph API permissions
+# ===========================================================================================
+
+<#
+.SYNOPSIS
+Identifies applications with highly privileged Microsoft Graph permissions.
+
+.DESCRIPTION
+Scans service principals for high-risk application role assignments (Graph permissions).
+Use with Find-InactivePrivilegedApps to focus on unused high-privilege apps.
+
+.LINK
+https://learn.microsoft.com/en-us/entra/fundamentals/zero-trust-protect-engineering-systems#inactive-applications-dont-have-highly-privileged-microsoft-graph-api-permissions
+
+.PARAMETER Data
+Collected artifacts. If omitted, collects on-demand.
+
+.PARAMETER PrivilegedPermissions
+Optional list of permission IDs to search for. Defaults to built-in high-risk set.
+
+.OUTPUTS
+[PSCustomObject[]] with properties: ServicePrincipalDisplayName, ServicePrincipalId,
+Permission, PermissionId, AssignmentType
+
+.EXAMPLE
+Find-EntraPrivilegedApps -Data $artifacts | Where-Object Permission -match "Directory"
+#>
+function Find-EntraPrivilegedApps {
+    param(
+        [hashtable]$Data,
+        [array]$PrivilegedPermissions = @(
+            [PSCustomObject]@{Permission = 'Application.ReadWrite.All'; Id = "1bfefb4e-e0b5-418b-a88f-73c46d2cc8e9" },
+            [PSCustomObject]@{Permission = 'Application.ReadWrite.All'; Id = "1cda74f2-2616-4834-b122-5cb1b07f8a59" },
+            [PSCustomObject]@{Permission = 'AppRoleAssignment.ReadWrite.All'; Id = "06b708a9-e830-4db3-a914-8e69da51d44f" },
+            [PSCustomObject]@{Permission = 'Calendars.ReadWrite'; Id = "ef54d2bf-783f-4e0f-bca1-3210c0444d99" },
+            [PSCustomObject]@{Permission = 'Directory.ReadWrite.All'; Id = "19dbc75e-c2e2-444c-a770-ec69d8559fc7" },
+            [PSCustomObject]@{Permission = 'Directory.ReadWrite.All'; Id = "78c8a3c8-a07e-4b9e-af1b-b5ccab50a175" },
+            [PSCustomObject]@{Permission = 'Directory.Read.All'; Id = "7ab1d382-f21e-4acd-a863-ba3e13f7da61" },
+            [PSCustomObject]@{Permission = 'Directory.Read.All'; Id = "5778995a-e1bf-45b8-affa-663a9f3f4d04" },
+            [PSCustomObject]@{Permission = 'Exchange.ManageAsApp'; Id = "dc50a0fb-09a3-484d-be87-e023b12c6440" },
+            [PSCustomObject]@{Permission = 'Files.ReadWrite.All'; Id = "75359482-378d-4052-8f01-80520e7db3cd" },
+            [PSCustomObject]@{Permission = 'GroupMember.ReadWrite.All'; Id = "dbaae8cf-10b5-4b86-a4a1-f871c94c6695" },
+            [PSCustomObject]@{Permission = 'Group.ReadWrite.All'; Id = "62a82d76-70ea-41e2-9197-370581804d09" },
+            [PSCustomObject]@{Permission = 'Mail.ReadWrite'; Id = "e2a3a72e-5f79-4c64-b1b1-878b674786c9" },
+            [PSCustomObject]@{Permission = 'Mail.Send'; Id = "b633e1c5-b582-4048-a93e-9f11b44c7e96" },
+            [PSCustomObject]@{Permission = 'RoleManagement.ReadWrite.Directory'; Id = "9e3f62cf-ca93-4989-b6ce-bf83c28f9fe8" },
+            [PSCustomObject]@{Permission = 'ServicePrincipalEndPoint.ReadWrite.All'; Id = "89c8469c-83ad-45f7-8ff2-6e3d4285709e" },
+            [PSCustomObject]@{Permission = 'Sites.ReadWrite.All'; Id = "9492366f-7969-46a4-8d15-ed1a20078fff" },
+            [PSCustomObject]@{Permission = 'User.Export.All'; Id = "405a51b5-8d8d-430b-9842-8be4b0e9f324" },
+            [PSCustomObject]@{Permission = 'User.ReadWrite.All'; Id = "741f803b-c850-494e-b5df-cde7c675a1ca" },
+            [PSCustomObject]@{Permission = 'User.Read.All'; Id = "df021288-bdef-4463-88db-98f22de89214" }
+        )
+    )
+
+    if (-not $Data) {
+        Write-Verbose "No data provided; collecting artifacts..."
+        $Data = Collect-EntraArtifacts
+    }
+
+    # Initialize check
+    $check = [PSCustomObject]@{
+        Control     = "EA-201"
+        Setting     = "Applications with highly privileged Microsoft Graph permissions"
+        Status  = "ERROR"
+        Description = "Unable to evaluate"
+        Details = @()
+    }
+
+    $privPermIds = $PrivilegedPermissions.Id
+
+    try {
+        if ($Data.ServicePrincipals) {
+            foreach ($sp in $Data.ServicePrincipals) {
+                $roleAssignments = Get-MgServicePrincipalAppRoleAssignment -ServicePrincipalId $sp.Id -All -ErrorAction SilentlyContinue
+                
+                foreach ($roleAssignment in $roleAssignments) {
+                    if ($privPermIds -contains $roleAssignment.AppRoleId) {
+                        $permName = ($PrivilegedPermissions | Where-Object { $_.Id -eq $roleAssignment.AppRoleId }).Permission
+                        $check.Details += [PSCustomObject]@{
+                            ServicePrincipalDisplayName = $sp.DisplayName
+                            ServicePrincipalId          = $sp.Id
+                            ServicePrincipalType        = $sp.ServicePrincipalType
+                            Enabled                     = $sp.AccountEnabled
+                            Permission                  = $permName
+                            PermissionId                = $roleAssignment.AppRoleId
+                        }
+                    }
+                }
+            }
+        }
+        
+        if ($check.Details.Count -gt 0) {
+            $check.Status = "FINDING"
+            $check.Description = "Found $($check.Details.Count) application(s) with highly privileged permissions"
+        }
+        elseif ($check.Details.Count -eq 0) {
+            $check.Status = "PASS"
+            $check.Description = "No applications found with highly privileged permissions"
+        }
+        else {
+            $check.Status = "UNKNOWN"
+            $check.Description = "Unable to determine privileged applications"
+        }
+    }
+    catch {
+        Write-Error "Failed to find privileged apps: $_"
+    }
+
+    return @($check)
+}
+
+# ===========================================================================================
+# SECTION 3: Inactive applications don't have highly privileged built-in roles
+# ===========================================================================================
+
+<#
+.SYNOPSIS
+Identifies service principals and groups assigned privileged Entra roles.
+
+.DESCRIPTION
+Expands role membership to show direct and group-based assignments. Includes permanent
+and PIM-active assignments.
+
+.LINK
+https://learn.microsoft.com/en-us/entra/fundamentals/zero-trust-protect-engineering-systems#inactive-applications-dont-have-highly-privileged-built-in-roles
+
+.PARAMETER Data
+Collected artifacts. If omitted, collects on-demand.
+
+.PARAMETER ExpandGroups
+If set, expands group members to show individual identities (expensive).
+
+.PARAMETER PrivilegedRoleIds
+Optional list of role IDs to search for. Defaults to built-in privileged roles.
+
+.OUTPUTS
+[PSCustomObject[]] with properties: RoleName, PrincipalType, PrincipalName, AssignmentType
+
+.EXAMPLE
+Find-EntraPrivilegedRoleAssignments -Data $artifacts | Where-Object PrincipalType -eq 'Group'
+#>
+function Find-EntraPrivilegedRoleAssignments {
+    param(
+        [hashtable]$Data,
+        [switch]$ExpandGroups,
+        [array]$PrivilegedRoleIds = @(
+            "9b895d92-2cd3-44c7-9d02-a6ac2d5ea5c3",  # Application Administrator
+            "cf1c38e5-3621-4004-a7cb-879624dced7c",  # Application Developer
+            "62e90394-69f5-4237-9190-012177145e10",  # Global Administrator
+            "b1be1c3e-b65d-4f19-8427-f6fa0d97feb9",  # Conditional Access Administrator
+            "158c047a-c907-4556-b7ef-446551a6b5f7",  # Cloud Application Administrator
+            "e8611ab8-c189-46e8-94e1-60213ab1f814"   # Privileged Role Administrator
+        )
+    )
+
+    if (-not $Data) {
+        Write-Verbose "No data provided; collecting artifacts..."
+        $Data = Collect-EntraArtifacts
+    }
+
+    # Initialize check
+    $check = [PSCustomObject]@{
+        Control     = "EA-301"
+        Setting     = "Service principals assigned to privileged roles"
+        Status  = "ERROR"
+        Description = "Unable to evaluate"
+        Details = @()
+    }
+
+    try {
+        if ($Data.RoleAssignments -and $Data.RoleDefinitions -and $Data.ServicePrincipals) {
+            foreach ($assignment in $Data.RoleAssignments) {
+                if ($PrivilegedRoleIds -contains $assignment.RoleDefinitionId) {
+                    $role = $Data.RoleDefinitions | Where-Object { $_.Id -eq $assignment.RoleDefinitionId }
+                    $principal = $Data.ServicePrincipals | Where-Object { $_.Id -eq $assignment.PrincipalId }
+                    $group = $Data.Groups | Where-Object { $_.Id -eq $assignment.PrincipalId }
+
+                    if ($principal) {
+                        $check.Details += [PSCustomObject]@{
+                            RoleName         = $role.DisplayName
+                            RoleId           = $role.Id
+                            PrincipalName    = $principal.DisplayName
+                            PrincipalId      = $principal.Id
+                            PrincipalType    = "ServicePrincipal"
+                            Enabled          = $principal.AccountEnabled
+                            IsManagedIdentity = $principal.ServicePrincipalType -eq "ManagedIdentity"
+                            AssignmentType   = "Direct"
+                            ScopeId          = $assignment.DirectoryScopeId
+                        }
+                    }
+                    elseif ($group) {
+                        $check.Details += [PSCustomObject]@{
+                            RoleName       = $role.DisplayName
+                            RoleId         = $role.Id
+                            PrincipalName  = $group.DisplayName
+                            PrincipalId    = $group.Id
+                            PrincipalType  = "Group"
+                            MemberCount    = if ($ExpandGroups) { ($group.TransitiveMembers | Measure-Object).Count } else { $null }
+                            AssignmentType = "GroupMembership"
+                            ScopeId        = $assignment.DirectoryScopeId
+                        }
+
+                        # Expand group members if requested
+                        if ($ExpandGroups -and $group.TransitiveMembers) {
+                            foreach ($member in $group.TransitiveMembers) {
+                                $memberSP = $Data.ServicePrincipals | Where-Object { $_.Id -eq $member.Id }
+                                if ($memberSP) {
+                                    $check.Details += [PSCustomObject]@{
+                                        RoleName         = $role.DisplayName
+                                        RoleId           = $role.Id
+                                        PrincipalName    = $memberSP.DisplayName
+                                        PrincipalId      = $memberSP.Id
+                                        PrincipalType    = "ServicePrincipal (via Group)"
+                                        IsManagedIdentity = $memberSP.ServicePrincipalType -eq "ManagedIdentity"
+                                        AssignmentType   = "GroupMembership"
+                                        ParentGroup      = $group.DisplayName
+                                        ScopeId          = $assignment.DirectoryScopeId
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if ($check.Details.Count -gt 0) {
+                $check.Status = "FINDING"
+                $check.Description = "Found $($check.Details.Count) assignment(s) to privileged roles"
+            }
+            elseif ($check.Details.Count -eq 0) {
+                $check.Status = "PASS"
+                $check.Description = "No service principals assigned to privileged roles"
+            }
+            else {
+                $check.Status = "UNKNOWN"
+                $check.Description = "Unable to determine privileged role assignments"
+            }
+        }
+    }
+    catch {
+        Write-Error "Failed to find privileged role assignments: $_"
+    }
+
+    return @($check)
+}
+
+# ===========================================================================================
+# SECTION 4 & 5: REDIRECT URI TESTS
+# ===========================================================================================
+
+<#
+.SYNOPSIS
+Collects redirect URIs from applications and service principals.
+
+.DESCRIPTION
+Extracts all redirect URIs (Web, Spa, PublicClient, ReplyUrls) and returns structured data
+for further analysis (DNS validation, HTTP checks, reclaimable hosts).
+
+.PARAMETER Data
+Collected artifacts. If omitted, collects on-demand.
+
+.OUTPUTS
+[PSCustomObject[]] with properties: ObjectType, DisplayName, ObjectId, AppId, RedirectUri
+
+.EXAMPLE
+$uris = Test-EntraRedirectUris -Data $artifacts
+$uris | Where-Object RedirectUri -match "localhost"
+#>
+function Test-EntraRedirectUris {
+    param(
+        [hashtable]$Data
+    )
+
+    if (-not $Data) {
+        Write-Verbose "No data provided; collecting artifacts..."
+        $Data = Collect-EntraArtifacts
+    }
+
+    $results = @()
+
+    try {
+        Write-Verbose "Processing applications..."
+        foreach ($app in $Data.Applications) {
+            $allUris = @()
+            if ($app.Web.RedirectUris) { $allUris += $app.Web.RedirectUris }
+            if ($app.Spa.RedirectUris) { $allUris += $app.Spa.RedirectUris }
+            if ($app.PublicClient.RedirectUris) { $allUris += $app.PublicClient.RedirectUris }
+
+            foreach ($uri in $allUris) {
+                $results += [PSCustomObject]@{
+                    ObjectType  = "Application"
+                    DisplayName = $app.DisplayName
+                    ObjectId    = $app.Id
+                    AppId       = $app.AppId
+                    RedirectUri = $uri
+                }
+            }
+        }
+
+        Write-Verbose "Processing service principals..."
+        foreach ($sp in $Data.ServicePrincipals) {
+            $allUris = @()
+            if ($sp.Web.RedirectUris) { $allUris += $sp.Web.RedirectUris }
+            if ($sp.ReplyUrls) { $allUris += $sp.ReplyUrls }
+            if ($sp.RedirectUris) { $allUris += $sp.RedirectUris }
+
+            foreach ($uri in $allUris) {
+                $results += [PSCustomObject]@{
+                    ObjectType  = "ServicePrincipal"
+                    DisplayName = $sp.DisplayName
+                    ObjectId    = $sp.Id
+                    AppId       = $sp.AppId
+                    RedirectUri = $uri
+                }
+            }
+        }
+    }
+    catch {
+        Write-Error "Failed to collect redirect URIs: $_"
+    }
+
+    return $results
+}
+
+
+
+# ===========================================================================================
+# SECTION 7: RESOURCE SPECIFIC CONSENT
+# ===========================================================================================
+
+<#
+.SYNOPSIS
+Tests resource-specific consent (RSC) policy configuration.
+
+.DESCRIPTION
+Validates RSC policies for Teams and Chat to ensure elevated permissions are
+appropriately restricted.
+
+.PARAMETER Data
+Collected artifacts. If omitted, collects on-demand.
+
+.OUTPUTS
+[PSCustomObject[]] with properties: Control, Setting, Status, Details
+
+.EXAMPLE
+Test-EntraResourceSpecificConsent -Data $artifacts
+#>
+function Test-EntraResourceSpecificConsent {
+    param(
+        [hashtable]$Data
+    )
+
+    if (-not $Data) {
+        Write-Verbose "No data provided; collecting artifacts..."
+        $Data = Collect-EntraArtifacts
+    }
+
+    $results = @()
+
+    try {
+        $authPolicy = $Data.Policies[0]
+        $rscPolicy = $authPolicy.ResourceSpecificConsentPolicy
+
+        $results += [PSCustomObject]@{
+            Control = "EA-007"
+            Setting = "Resource-Specific Consent Policy"
+            Status  = if ($rscPolicy -eq "ManagedByMicrosoft") { "PASS" } else { "FINDING" }
+            Details = "RSC Policy: $rscPolicy; should be 'ManagedByMicrosoft'"
+        }
+    }
+    catch {
+        $results += [PSCustomObject]@{
+            Control = "EA-007"
+            Setting = "Resource-Specific Consent"
+            Status  = "ERROR"
+            Details = "Error: $($_.Exception.Message)"
+        }
+    }
+
+    return $results
+}
+
+# ===========================================================================================
+# SECTION 8: WORKLOAD IDENTITY ROLES
+# ===========================================================================================
+
+<#
+.SYNOPSIS
+Identifies workload identities (managed identities) assigned to privileged roles.
+
+.DESCRIPTION
+Filters service principals with ServicePrincipalType = "ManagedIdentity" that hold
+privileged role assignments. Often indicates misconfiguration if not intentional.
+
+.PARAMETER Data
+Collected artifacts. If omitted, collects on-demand.
+
+.OUTPUTS
+[PSCustomObject[]] with properties: ManagedIdentityName, RoleName, ScopeId
+
+.EXAMPLE
+Test-EntraWorkloadIdentityRoles -Data $artifacts
+#>
+function Test-EntraWorkloadIdentityRoles {
+    param(
+        [hashtable]$Data
+    )
+
+    if (-not $Data) {
+        Write-Verbose "No data provided; collecting artifacts..."
+        $Data = Collect-EntraArtifacts
+    }
+
+    $results = @()
+
+    try {
+        # Use privileged role assignments already found
+        $privAssignments = Find-EntraPrivilegedRoleAssignments -Data $Data
+
+        $managedIdentities = $privAssignments | Where-Object { $_.IsManagedIdentity -eq $true }
+
+        if ($managedIdentities) {
+            $results += $managedIdentities | ForEach-Object {
+                [PSCustomObject]@{
+                    Control              = "EA-008"
+                    ManagedIdentityName  = $_.PrincipalName
+                    ManagedIdentityId    = $_.PrincipalId
+                    PrivilegedRole       = $_.RoleName
+                    Status               = "FINDING"
+                    Details              = "Workload identity assigned to privileged role"
+                }
+            }
+        }
+        else {
+            $results += [PSCustomObject]@{
+                Control = "EA-008"
+                Setting = "Workload Identity Roles"
+                Status  = "PASS"
+                Details = "No workload identities found in privileged roles"
+            }
+        }
+    }
+    catch {
+        $results += [PSCustomObject]@{
+            Control = "EA-008"
+            Setting = "Workload Identity Check"
+            Status  = "ERROR"
+            Details = "Error: $($_.Exception.Message)"
+        }
+    }
+
+    return $results
+}
+
+# ===========================================================================================
+# SECTION 9: ENTERPRISE APP ASSIGNMENT REQUIREMENTS
+# ===========================================================================================
+
+<#
+.SYNOPSIS
+Tests whether enterprise applications require explicit role assignment.
+
+.DESCRIPTION
+Validates AppRoleAssignmentRequired setting. Apps should require explicit assignment
+to limit blast radius in case of compromise.
+
+.PARAMETER Data
+Collected artifacts. If omitted, collects on-demand.
+
+.OUTPUTS
+[PSCustomObject[]] with properties: ServicePrincipalName, AppRoleAssignmentRequired, Status
+
+.EXAMPLE
+Test-EntraEnterpriseAppAssignmentRequirements -Data $artifacts
+#>
+function Test-EntraEnterpriseAppAssignmentRequirements {
+    param(
+        [hashtable]$Data
+    )
+
+    if (-not $Data) {
+        Write-Verbose "No data provided; collecting artifacts..."
+        $Data = Collect-EntraArtifacts
+    }
+
+    $results = @()
+
+    try {
+        foreach ($sp in $Data.ServicePrincipals) {
+            if (-not $sp.AppRoleAssignmentRequired) {
+                $results += [PSCustomObject]@{
+                    Control                   = "EA-009"
+                    ServicePrincipalName      = $sp.DisplayName
+                    ServicePrincipalId        = $sp.Id
+                    AppRoleAssignmentRequired = $false
+                    Status                    = "FINDING"
+                    Details                   = "App does not require explicit role assignment"
+                }
+            }
+        }
+
+        if ($results.Count -eq 0) {
+            $results += [PSCustomObject]@{
+                Control = "EA-009"
+                Setting = "Enterprise App Assignment"
+                Status  = "PASS"
+                Details = "All enterprise apps require explicit role assignment"
+            }
+        }
+    }
+    catch {
+        $results += [PSCustomObject]@{
+            Control = "EA-009"
+            Setting = "Enterprise App Assignment"
+            Status  = "ERROR"
+            Details = "Error: $($_.Exception.Message)"
+        }
+    }
+
+    return $results
+}
+
+# ===========================================================================================
+# ORCHESTRATOR FUNCTION
+# ===========================================================================================
+
+<#
+.SYNOPSIS
+Orchestrates all Entra app Zero Trust security checks.
+
+.DESCRIPTION
+Coordinates artifact collection and runs all checks in proper order, with optional
+filtering by check name and export capabilities.
+
+.PARAMETER TenantId
+Target tenant ID. If omitted, uses current Graph connection.
+
+.PARAMETER Only
+Run only specific checks (comma-separated names). Valid names:
+  AppPolicy, PrivilegedApps, PrivilegedRoles, RedirectUris, ResourceConsent,
+  WorkloadIdentity, EnterpriseAppAssignment
+
+.PARAMETER ExportPath
+Export results to CSV/JSON files in this directory.
+
+.PARAMETER IncludeSignIns
+Include sign-in logs (time-consuming on large tenants).
+
+.PARAMETER PassThru
+Return results object.
+
+.OUTPUTS
+[hashtable] with results per check name.
+
+.EXAMPLE
+$results = Invoke-EntraAppsZeroTrust -TenantId 'xxxxx' -ExportPath ./reports -PassThru
+$results.AppPolicy | Where-Object Status -eq 'FINDING'
+#>
+function Invoke-EntraAppsZeroTrust {
+    param(
+        [string]$TenantId,
+        [string[]]$Only,
+        [string]$ExportPath,
+        [switch]$IncludeSignIns,
+        [switch]$PassThru
+    )
+
+    Write-Host "=== Entra Apps Zero Trust Assessment ===" -ForegroundColor Cyan
+    Write-Host "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+    Write-Host ""
+
+    # Collect artifacts once
+    Write-Host "Collecting Entra artifacts..." -ForegroundColor Yellow
+    $data = Collect-EntraArtifacts -TenantId $TenantId -IncludeSignIns $IncludeSignIns
+    
+    if ($data.Error) {
+        Write-Error "Failed to collect artifacts: $($data.Error)"
+        return
+    }
+
+    # Define all available checks
+    $allChecks = @(
+        @{ Name = "AppPolicy"; Function = "Test-EntraAppRegistrationPolicy" },
+        @{ Name = "PrivilegedApps"; Function = "Find-EntraPrivilegedApps" },
+        @{ Name = "PrivilegedRoles"; Function = "Find-EntraPrivilegedRoleAssignments" },
+        @{ Name = "RedirectUris"; Function = "Test-EntraRedirectUris" },
+        @{ Name = "ResourceConsent"; Function = "Test-EntraResourceSpecificConsent" },
+        @{ Name = "WorkloadIdentity"; Function = "Test-EntraWorkloadIdentityRoles" },
+        @{ Name = "EnterpriseAppAssignment"; Function = "Test-EntraEnterpriseAppAssignmentRequirements" }
+    )
+
+    # Filter checks if -Only specified
+    $checksToRun = if ($Only) {
+        $allChecks | Where-Object { $_.Name -in $Only }
+    }
+    else {
+        $allChecks
+    }
+
+    # Run checks
+    $results = @{}
+    foreach ($check in $checksToRun) {
+        Write-Host "Running $($check.Name)..." -ForegroundColor Yellow
+        try {
+            $results[$check.Name] = & $check.Function -Data $data
+            Write-Host "Complete" -ForegroundColor Green
+        }
+        catch {
+            Write-Host "Failed: $_" -ForegroundColor Red
+            $results[$check.Name] = @()
+        }
+    }
+
+    # Export if requested
+    if ($ExportPath) {
+        New-Item -ItemType Directory -Path $ExportPath -Force | Out-Null
+        foreach ($name in $results.Keys) {
+            $csvPath = Join-Path $ExportPath "$name.csv"
+            $jsonPath = Join-Path $ExportPath "$name.json"
+            $results[$name] | Export-Csv -Path $csvPath -NoTypeInformation
+            $results[$name] | ConvertTo-Json | Out-File -Path $jsonPath
+            Write-Host "Exported: $csvPath, $jsonPath" -ForegroundColor Green
+        }
+    }
+
+    Write-Host ""
+    Write-Host "=== Assessment Complete ===" -ForegroundColor Cyan
+
+    if ($PassThru) {
+        return $results
+    }
+}
+
+# ===========================================================================================
+# LEGACY INLINE SECTION CODE (To Be Refactored)
+# ===========================================================================================
 
 # Connect to Microsoft Graph with required scopes
 $tenantID = '' #Tenant ID GUID (Optional)
