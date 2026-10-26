@@ -1,5 +1,5 @@
 #Requires -Version 7.0
-#Requires -Modules Microsoft.Graph.Identity.Governance, Microsoft.Graph.Applications
+#Requires -Modules Microsoft.Graph.Identity.Governance, Microsoft.Graph.Applications, Microsoft.Graph.Groups
 <#
 .SYNOPSIS
 Lists service principals that hold a privileged Entra directory role.
@@ -28,7 +28,7 @@ $PrivilegedRoles = @(
 )
 
 $connectParams = @{
-    Scopes    = 'RoleManagement.Read.Directory', 'Application.Read.All'
+    Scopes    = 'RoleManagement.Read.Directory', 'Application.Read.All', 'GroupMember.Read.All'
     NoWelcome = $true
 }
 if ($TenantId) { $connectParams.TenantId = $TenantId }
@@ -47,16 +47,30 @@ foreach ($name in $PrivilegedRoles) {
 $assignments = Get-MgRoleManagementDirectoryRoleAssignment -All -ExpandProperty Principal
 foreach ($assignment in $assignments) {
     $role = $privilegedIds[$assignment.RoleDefinitionId]
-    $principalType = $assignment.Principal.AdditionalProperties['@odata.type']
-    if (-not $role -or $principalType -ne '#microsoft.graph.servicePrincipal') { continue }
+    if (-not $role) { continue }
 
-    $app = Get-MgServicePrincipal -ServicePrincipalId $assignment.PrincipalId
-    [PSCustomObject]@{
-        DisplayName    = $app.DisplayName
-        AppId          = $app.AppId
-        AccountEnabled = $app.AccountEnabled
-        AppOwnerTenant = $app.AppOwnerOrganizationId   # raw ID for now; calculated in a later phase
-        Role           = $role
-        Scope          = $assignment.DirectoryScopeId  # '/' means the whole tenant
+    $groupName = $null
+    $apps = @()   # users and other principal types stay empty
+    switch ($assignment.Principal.AdditionalProperties['@odata.type']) {
+        '#microsoft.graph.servicePrincipal' {
+            $apps = Get-MgServicePrincipal -ServicePrincipalId $assignment.PrincipalId
+        }
+        '#microsoft.graph.group' {
+            # Groups that can hold roles cannot be nested, so direct members are the full list
+            $groupName = $assignment.Principal.AdditionalProperties['displayName']
+            $apps = Get-MgGroupMemberAsServicePrincipal -GroupId $assignment.PrincipalId -All
+        }
+    }
+
+    foreach ($app in $apps) {
+        [PSCustomObject]@{
+            DisplayName      = $app.DisplayName
+            AppId            = $app.AppId
+            AccountEnabled   = $app.AccountEnabled
+            AppOwnerTenant   = $app.AppOwnerOrganizationId   # raw ID for now; calculated in a later phase
+            Role             = $role
+            Scope            = $assignment.DirectoryScopeId  # '/' means the whole tenant
+            AssignedViaGroup = $groupName
+        }
     }
 }

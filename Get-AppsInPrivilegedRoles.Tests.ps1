@@ -23,7 +23,9 @@ BeforeAll {
             PrincipalId       = 'principal-1'
             RoleDefinitionId  = $RoleIds[$Role]
             DirectoryScopeId  = $Scope
-            Principal         = [PSCustomObject]@{ AdditionalProperties = @{ '@odata.type' = $ODataType } }
+            Principal         = [PSCustomObject]@{
+                AdditionalProperties = @{ '@odata.type' = $ODataType; 'displayName' = 'Admins Group' }
+            }
         }
     }
 }
@@ -47,6 +49,31 @@ Describe 'Get-AppsInPrivilegedRoles' {
         $rows[0].AppOwnerTenant | Should -Be 'tenant-1'
         $rows[0].Role | Should -Be 'Global Administrator'
         $rows[0].Scope | Should -Be '/administrativeUnits/au-1'
+        $rows[0].AssignedViaGroup | Should -BeNullOrEmpty
+    }
+
+    It 'returns a row for each service principal in a group assigned a privileged role' {
+        Mock Get-MgRoleManagementDirectoryRoleAssignment { Get-FakeAssignment -Role 'Global Administrator' -ODataType '#microsoft.graph.group' }
+        Mock Get-MgGroupMemberAsServicePrincipal { $App, $App }
+        $rows = & $ScriptPath
+        $rows | Should -HaveCount 2
+        $rows[0].DisplayName | Should -Be 'Contoso App'
+        $rows[0].Role | Should -Be 'Global Administrator'
+        $rows[0].AssignedViaGroup | Should -Be 'Admins Group'
+        Should -Invoke Get-MgGroupMemberAsServicePrincipal -Times 1 -ParameterFilter { $GroupId -eq 'principal-1' }
+    }
+
+    It 'returns nothing for a privileged group with no service principal members' {
+        Mock Get-MgRoleManagementDirectoryRoleAssignment { Get-FakeAssignment -Role 'Global Administrator' -ODataType '#microsoft.graph.group' }
+        Mock Get-MgGroupMemberAsServicePrincipal { @() }
+        & $ScriptPath | Should -BeNullOrEmpty
+    }
+
+    It 'does not expand groups holding roles that are not on the privileged list' {
+        Mock Get-MgRoleManagementDirectoryRoleAssignment { Get-FakeAssignment -Role 'Reports Reader' -ODataType '#microsoft.graph.group' }
+        Mock Get-MgGroupMemberAsServicePrincipal { $App }
+        & $ScriptPath | Should -BeNullOrEmpty
+        Should -Invoke Get-MgGroupMemberAsServicePrincipal -Times 0
     }
 
     It 'excludes roles that are not on the privileged list' {
