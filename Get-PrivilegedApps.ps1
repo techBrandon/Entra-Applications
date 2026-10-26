@@ -31,9 +31,25 @@ $PrivilegedPermissions = @{
     '00000002-0000-0ff1-ce00-000000000000' = @('Exchange.ManageAsApp')
 }
 
+# EDIT PER TENANT: tenants whose apps should be labelled 'Microsoft'
+$MicrosoftTenantIds = @(
+    'f8cdef31-a31e-4b4a-93e4-5f571e91255a'  # Microsoft Services
+    '72f988bf-86f1-41af-91ab-2d7cd011db47'  # Microsoft
+)
+
 $connectParams = @{ Scopes = 'Application.Read.All'; NoWelcome = $true }
 if ($TenantId) { $connectParams.TenantId = $TenantId }
 Connect-MgGraph @connectParams
+$HomeTenantId = "$((Get-MgContext).TenantId)"
+
+# Says who published the app. Third Party apps are the ones to review first.
+function Get-AppOwnerTenant {
+    param([string]$OwnerId)   # [string] because Graph may return a Guid or a string
+    if (-not $OwnerId) { return 'Unknown' }
+    if ($OwnerId -eq $HomeTenantId) { return 'Home Tenant' }
+    if ($OwnerId -in $MicrosoftTenantIds) { return 'Microsoft' }
+    'Third Party'
+}
 
 $appCache = @{}   # principal object Id -> service principal, so each app is fetched once
 
@@ -66,7 +82,7 @@ foreach ($resourceAppId in $PrivilegedPermissions.Keys) {
             DisplayName    = $app.DisplayName
             AppId          = $app.AppId
             AccountEnabled = $app.AccountEnabled
-            AppOwnerTenant = $app.AppOwnerOrganizationId   # raw ID for now; calculated in a later phase
+            AppOwnerTenant = Get-AppOwnerTenant $app.AppOwnerOrganizationId
             Resource       = $resource.DisplayName
             Permission     = $permission
         }

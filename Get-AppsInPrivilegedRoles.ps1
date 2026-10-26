@@ -27,12 +27,28 @@ $PrivilegedRoles = @(
     'Security Administrator', 'Security Operator', 'Security Reader', 'User Administrator'
 )
 
+# EDIT PER TENANT: tenants whose apps should be labelled 'Microsoft'
+$MicrosoftTenantIds = @(
+    'f8cdef31-a31e-4b4a-93e4-5f571e91255a'  # Microsoft Services
+    '72f988bf-86f1-41af-91ab-2d7cd011db47'  # Microsoft
+)
+
 $connectParams = @{
     Scopes    = 'RoleManagement.Read.Directory', 'Application.Read.All', 'GroupMember.Read.All'
     NoWelcome = $true
 }
 if ($TenantId) { $connectParams.TenantId = $TenantId }
 Connect-MgGraph @connectParams
+$HomeTenantId = "$((Get-MgContext).TenantId)"
+
+# Says who published the app. Third Party apps are the ones to review first.
+function Get-AppOwnerTenant {
+    param([string]$OwnerId)   # [string] because Graph may return a Guid or a string
+    if (-not $OwnerId) { return 'Unknown' }
+    if ($OwnerId -eq $HomeTenantId) { return 'Home Tenant' }
+    if ($OwnerId -in $MicrosoftTenantIds) { return 'Microsoft' }
+    'Third Party'
+}
 
 # Translate role names to the IDs Graph uses in assignments
 $roleDefinitions = Get-MgRoleManagementDirectoryRoleDefinition -All
@@ -67,7 +83,7 @@ foreach ($assignment in $assignments) {
             DisplayName      = $app.DisplayName
             AppId            = $app.AppId
             AccountEnabled   = $app.AccountEnabled
-            AppOwnerTenant   = $app.AppOwnerOrganizationId   # raw ID for now; calculated in a later phase
+            AppOwnerTenant   = Get-AppOwnerTenant $app.AppOwnerOrganizationId
             Role             = $role
             Scope            = $assignment.DirectoryScopeId  # '/' means the whole tenant
             AssignedViaGroup = $groupName

@@ -24,6 +24,7 @@ Describe 'Get-PrivilegedApps' {
         $appRoles = $Roles.GetEnumerator() | ForEach-Object { [PSCustomObject]@{ Id = $_.Value; Value = $_.Key } }
         $GraphResource = [PSCustomObject]@{ Id = 'res-1'; DisplayName = 'Microsoft Graph'; AppRoles = $appRoles }
         Mock Connect-MgGraph {}
+        Mock Get-MgContext { [PSCustomObject]@{ TenantId = 'home-tenant' } }
         Mock Get-MgServicePrincipal { $GraphResource } -ParameterFilter { $Filter -like "*$GraphAppId*" }
         Mock Get-MgServicePrincipal { $null } -ParameterFilter { $Filter -and $Filter -notlike "*$GraphAppId*" }
         Mock Get-MgServicePrincipal { $App } -ParameterFilter { $ServicePrincipalId }
@@ -38,7 +39,7 @@ Describe 'Get-PrivilegedApps' {
         $rows[0].DisplayName | Should -Be 'Contoso App'
         $rows[0].AppId | Should -Be 'app-1'
         $rows[0].AccountEnabled | Should -BeTrue
-        $rows[0].AppOwnerTenant | Should -Be 'tenant-1'
+        $rows[0].AppOwnerTenant | Should -Be 'Third Party'
         $rows[0].Resource | Should -Be 'Microsoft Graph'
         $rows[0].Permission | Should -Be 'Mail.Send'
     }
@@ -66,5 +67,31 @@ Describe 'Get-PrivilegedApps' {
     It 'throws when a listed permission does not exist on the API' {
         $GraphResource.AppRoles = @()
         { & $ScriptPath -WarningAction SilentlyContinue } | Should -Throw "*not found on 'Microsoft Graph'*"
+    }
+}
+
+Describe 'Get-PrivilegedApps AppOwnerTenant' {
+    BeforeEach {
+        Mock Connect-MgGraph {}
+        Mock Get-MgContext { [PSCustomObject]@{ TenantId = 'home-tenant' } }
+        $graphRoles = $Roles.GetEnumerator() | ForEach-Object { [PSCustomObject]@{ Id = $_.Value; Value = $_.Key } }
+        $graph = [PSCustomObject]@{ Id = 'res-1'; DisplayName = 'Microsoft Graph'; AppRoles = $graphRoles }
+        Mock Get-MgServicePrincipal { $graph } -ParameterFilter { $Filter -like "*$GraphAppId*" }
+        Mock Get-MgServicePrincipal { $null } -ParameterFilter { $Filter -and $Filter -notlike "*$GraphAppId*" }
+        Mock Get-MgServicePrincipalAppRoleAssignedTo {
+            [PSCustomObject]@{ PrincipalId = 'app-obj'; PrincipalType = 'ServicePrincipal'; AppRoleId = $Roles['Mail.Send'] }
+        }
+    }
+
+    It 'labels owner <OwnerId> as <Expected>' -ForEach @(
+        @{ OwnerId = 'home-tenant'; Expected = 'Home Tenant' }
+        @{ OwnerId = 'f8cdef31-a31e-4b4a-93e4-5f571e91255a'; Expected = 'Microsoft' }
+        @{ OwnerId = '72f988bf-86f1-41af-91ab-2d7cd011db47'; Expected = 'Microsoft' }
+        @{ OwnerId = 'other-tenant'; Expected = 'Third Party' }
+        @{ OwnerId = $null; Expected = 'Unknown' }
+    ) {
+        $owned = [PSCustomObject]@{ DisplayName = 'X'; AppId = 'x'; AccountEnabled = $true; AppOwnerOrganizationId = $OwnerId }
+        Mock Get-MgServicePrincipal { $owned } -ParameterFilter { $ServicePrincipalId }
+        (& $ScriptPath -WarningAction SilentlyContinue).AppOwnerTenant | Should -Be $Expected
     }
 }

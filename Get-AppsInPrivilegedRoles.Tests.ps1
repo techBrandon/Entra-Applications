@@ -33,6 +33,7 @@ BeforeAll {
 Describe 'Get-AppsInPrivilegedRoles' {
     BeforeEach {
         Mock Connect-MgGraph {}
+        Mock Get-MgContext { [PSCustomObject]@{ TenantId = 'home-tenant' } }
         Mock Get-MgRoleManagementDirectoryRoleDefinition {
             $RoleIds.GetEnumerator() | ForEach-Object { [PSCustomObject]@{ Id = $_.Value; DisplayName = $_.Key } }
         }
@@ -46,7 +47,7 @@ Describe 'Get-AppsInPrivilegedRoles' {
         $rows[0].DisplayName | Should -Be 'Contoso App'
         $rows[0].AppId | Should -Be 'app-1'
         $rows[0].AccountEnabled | Should -BeFalse
-        $rows[0].AppOwnerTenant | Should -Be 'tenant-1'
+        $rows[0].AppOwnerTenant | Should -Be 'Third Party'
         $rows[0].Role | Should -Be 'Global Administrator'
         $rows[0].Scope | Should -Be '/administrativeUnits/au-1'
         $rows[0].AssignedViaGroup | Should -BeNullOrEmpty
@@ -94,5 +95,28 @@ Describe 'Get-AppsInPrivilegedRoles' {
         }
         Mock Get-MgRoleManagementDirectoryRoleAssignment { @() }
         { & $ScriptPath } | Should -Throw "*Role 'Global Administrator' not found*"
+    }
+}
+
+Describe 'Get-AppsInPrivilegedRoles AppOwnerTenant' {
+    BeforeEach {
+        Mock Connect-MgGraph {}
+        Mock Get-MgContext { [PSCustomObject]@{ TenantId = 'home-tenant' } }
+        Mock Get-MgRoleManagementDirectoryRoleDefinition {
+            $RoleIds.GetEnumerator() | ForEach-Object { [PSCustomObject]@{ Id = $_.Value; DisplayName = $_.Key } }
+        }
+        Mock Get-MgRoleManagementDirectoryRoleAssignment { Get-FakeAssignment -Role 'Global Administrator' }
+    }
+
+    It 'labels owner <OwnerId> as <Expected>' -ForEach @(
+        @{ OwnerId = 'home-tenant'; Expected = 'Home Tenant' }
+        @{ OwnerId = 'f8cdef31-a31e-4b4a-93e4-5f571e91255a'; Expected = 'Microsoft' }
+        @{ OwnerId = '72f988bf-86f1-41af-91ab-2d7cd011db47'; Expected = 'Microsoft' }
+        @{ OwnerId = 'other-tenant'; Expected = 'Third Party' }
+        @{ OwnerId = $null; Expected = 'Unknown' }
+    ) {
+        $owned = [PSCustomObject]@{ DisplayName = 'X'; AppId = 'x'; AccountEnabled = $true; AppOwnerOrganizationId = $OwnerId }
+        Mock Get-MgServicePrincipal { $owned }
+        (& $ScriptPath).AppOwnerTenant | Should -Be $Expected
     }
 }
