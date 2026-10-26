@@ -17,11 +17,33 @@ $ErrorActionPreference = 'Stop'
 $PrivilegedPermissions = @{
     # Microsoft Graph
     '00000003-0000-0000-c000-000000000000' = @(
-        'Application.ReadWrite.All', 'AppRoleAssignment.ReadWrite.All', 'Calendars.ReadWrite',
-        'Directory.ReadWrite.All', 'Directory.Read.All', 'Files.ReadWrite.All',
-        'GroupMember.ReadWrite.All', 'Group.ReadWrite.All', 'Mail.ReadWrite', 'Mail.Send',
-        'RoleManagement.ReadWrite.Directory', 'ServicePrincipalEndpoint.ReadWrite.All',
-        'Sites.ReadWrite.All', 'User.Export.All', 'User.ReadWrite.All', 'User.Read.All'
+        # Apps, consent and role assignment
+        'Application.ReadWrite.All', 'Application.ReadWrite.OwnedBy', 'AppRoleAssignment.ReadWrite.All',
+        'DelegatedPermissionGrant.ReadWrite.All', 'ServicePrincipalEndpoint.ReadWrite.All',
+        'RoleManagement.ReadWrite.Directory', 'RoleAssignmentSchedule.ReadWrite.Directory',
+        'RoleEligibilitySchedule.ReadWrite.Directory', 'RoleManagementPolicy.ReadWrite.Directory',
+        'EntitlementManagement.ReadWrite.All', 'ConsentRequest.ReadWrite.All',
+        # PIM
+        'PrivilegedAccess.ReadWrite.AzureAD', 'PrivilegedAccess.ReadWrite.AzureADGroup',
+        'PrivilegedAssignmentSchedule.ReadWrite.AzureADGroup',
+        'PrivilegedEligibilitySchedule.ReadWrite.AzureADGroup',
+        # Directory objects, users and groups
+        'Directory.ReadWrite.All', 'Group.ReadWrite.All', 'GroupMember.ReadWrite.All',
+        'User.ReadWrite.All', 'User-PasswordProfile.ReadWrite.All',
+        'UserAuthenticationMethod.ReadWrite.All', 'Domain.ReadWrite.All', 'Organization.ReadWrite.All',
+        # Tenant policy and federation
+        'Policy.ReadWrite.ConditionalAccess', 'Policy.ReadWrite.PermissionGrant',
+        'Policy.ReadWrite.Authorization', 'Policy.ReadWrite.AuthenticationMethod',
+        'Policy.ReadWrite.AuthenticationFlows', 'Policy.ReadWrite.CrossTenantAccess',
+        'Policy.ReadWrite.ConsentRequest', 'Policy.ReadWrite.SecurityDefaults',
+        'Policy.ReadWrite.ApplicationConfiguration', 'Policy.ReadWrite.TrustFramework',
+        'IdentityProvider.ReadWrite.All', 'TrustFrameworkKeySet.ReadWrite.All',
+        # Intune can run code on managed devices
+        'DeviceManagementRBAC.ReadWrite.All', 'DeviceManagementConfiguration.ReadWrite.All',
+        'DeviceManagementApps.ReadWrite.All', 'DeviceManagementManagedDevices.PrivilegedOperations.All',
+        # Broad data access (not tenant takeover, kept from the original list)
+        'Directory.Read.All', 'User.Read.All', 'User.Export.All', 'Calendars.ReadWrite',
+        'Mail.ReadWrite', 'Mail.Send', 'Files.ReadWrite.All', 'Sites.ReadWrite.All'
     )
     # Windows Azure Active Directory (Azure AD Graph)
     '00000002-0000-0000-c000-000000000000' = @(

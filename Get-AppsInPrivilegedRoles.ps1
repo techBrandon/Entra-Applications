@@ -13,6 +13,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 # EDIT PER TENANT: role names to flag. Names must match the Entra role display name exactly.
+# Lists every built-in role labelled PRIVILEGED on the page below (checked October 2026).
 # Roles: https://learn.microsoft.com/entra/identity/role-based-access-control/permissions-reference
 $PrivilegedRoles = @(
     'Application Administrator', 'Application Developer', 'Attribute Provisioning Administrator',
@@ -24,7 +25,10 @@ $PrivilegedRoles = @(
     'Hybrid Identity Administrator', 'Intune Administrator', 'Lifecycle Workflows Administrator',
     'Partner Tier1 Support', 'Partner Tier2 Support', 'Password Administrator',
     'Privileged Authentication Administrator', 'Privileged Role Administrator',
-    'Security Administrator', 'Security Operator', 'Security Reader', 'User Administrator'
+    'Security Administrator', 'Security Operator', 'Security Reader', 'User Administrator',
+    'Agent ID Administrator', 'AI Administrator', 'AI Reader', 'Attribute Provisioning Reader',
+    'Authentication Extensibility Password Administrator', 'Entra SOC Identity Responder',
+    'Identity Governance Administrator', 'Tenant Governance Administrator'
 )
 
 # EDIT PER TENANT: tenants whose apps should be labelled 'Microsoft'
