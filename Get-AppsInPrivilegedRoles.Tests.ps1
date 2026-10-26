@@ -88,13 +88,49 @@ Describe 'Get-AppsInPrivilegedRoles' {
         Should -Invoke Get-MgServicePrincipal -Times 0
     }
 
-    It 'throws when a listed role does not exist in the tenant' {
+    It 'warns and keeps going when a listed role does not exist in the tenant' {
         Mock Get-MgRoleManagementDirectoryRoleDefinition {
-            $RoleIds.GetEnumerator() | Where-Object Key -ne 'Global Administrator' |
+            $RoleIds.GetEnumerator() | Where-Object Key -ne 'Global Reader' |
                 ForEach-Object { [PSCustomObject]@{ Id = $_.Value; DisplayName = $_.Key } }
         }
-        Mock Get-MgRoleManagementDirectoryRoleAssignment { @() }
-        { & $ScriptPath } | Should -Throw "*Role 'Global Administrator' not found*"
+        Mock Get-MgRoleManagementDirectoryRoleAssignment { Get-FakeAssignment -Role 'Global Administrator' }
+        $rows = & $ScriptPath -WarningVariable warnings -WarningAction SilentlyContinue
+        $rows.Role | Should -Be 'Global Administrator'
+        $warnings -join ' ' | Should -BeLike "*Role 'Global Reader' not found*"
+    }
+
+    It 'skips role assignments whose principal was deleted' {
+        Mock Get-MgRoleManagementDirectoryRoleAssignment {
+            [PSCustomObject]@{
+                PrincipalId = 'gone'; RoleDefinitionId = $RoleIds['Global Administrator']
+                DirectoryScopeId = '/'; Principal = $null
+            }
+            Get-FakeAssignment -Role 'Global Administrator'
+        }
+        $rows = & $ScriptPath
+        $rows | Should -HaveCount 1
+        $rows[0].DisplayName | Should -Be 'Contoso App'
+    }
+
+    It 'recognises a service principal by its .NET type when @odata.type is missing' {
+        class MicrosoftGraphServicePrincipal { [hashtable]$AdditionalProperties = @{} }
+        Mock Get-MgRoleManagementDirectoryRoleAssignment {
+            [PSCustomObject]@{
+                PrincipalId = 'principal-1'; RoleDefinitionId = $RoleIds['Global Administrator']
+                DirectoryScopeId = '/'; Principal = [MicrosoftGraphServicePrincipal]::new()
+            }
+        }
+        (& $ScriptPath).DisplayName | Should -Be 'Contoso App'
+    }
+
+    It 'looks up an app once when it holds several privileged roles' {
+        Mock Get-MgRoleManagementDirectoryRoleAssignment {
+            Get-FakeAssignment -Role 'Global Administrator'
+            Get-FakeAssignment -Role 'Security Reader'
+        }
+        $rows = & $ScriptPath
+        $rows.Role | Should -Be 'Global Administrator', 'Security Reader'
+        Should -Invoke Get-MgServicePrincipal -Times 1 -Exactly
     }
 }
 

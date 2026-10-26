@@ -4,17 +4,27 @@ Install-Module Microsoft.Graph
 ****
 **Get-PrivilegedApps.ps1**
 
-Reports on all Applications granted elevated permissions in the tenant. 
-Compares a custom list of highly privileged permissions with all configured Application permissions in the environment.
-Outputs a list of Applications and their privileged permissions.
+Reports apps (service principals) that hold privileged application permissions.
+Edit the `$PrivilegedPermissions` list at the top of the script to match your tenant; permissions are listed by name under the API they belong to.
+Returns one row per app and permission: DisplayName, AppId, AccountEnabled, AppOwnerTenant, Resource, Permission.
+
+```powershell
+./Get-PrivilegedApps.ps1 -TenantId <tenant-guid> | Export-Csv PrivilegedApps.csv
+```
 
 ****
 **Get-AppsInPrivilegedRoles.ps1**
 
-Reports on Applications with membership in highly privileged roles.
-Compares a custom list of highly privileged roles with all role membership including an Application.
-Outputs a list of Applications that are a member of a privileged role.
-Identifies if the Application is considered a Managed Identity which would indicate a lower risk.
+Reports apps (service principals) that hold a privileged Entra directory role, directly or through a role-assignable group.
+Edit the `$PrivilegedRoles` list at the top of the script to match your tenant; roles are listed by display name.
+Returns one row per app and role: DisplayName, AppId, AccountEnabled, AppOwnerTenant, Role, Scope, AssignedViaGroup.
+
+```powershell
+./Get-AppsInPrivilegedRoles.ps1 -TenantId <tenant-guid> | Export-Csv AppsInPrivilegedRoles.csv
+```
+
+AppOwnerTenant is `Home Tenant`, `Microsoft` (IDs in `$MicrosoftTenantIds`), `Third Party` or `Unknown`.
+Both scripts only read data. Sign in with an account that can read directory roles and applications (for example Global Reader).
 
 ****
 **Get-ClientSecrets.ps1**

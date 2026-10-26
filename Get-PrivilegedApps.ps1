@@ -3,8 +3,12 @@
 <#
 .SYNOPSIS
 Lists service principals that hold privileged application permissions.
+.NOTES
+Read-only. Requests these Graph scopes: Application.Read.All.
+Sign in as an account that can read applications (for example Global Reader or Application Administrator).
+Checks application permissions only. Delegated permission grants are not included.
 .EXAMPLE
-./Get-PrivilegedApps.ps1 -TenantId <tenant-guid> | Export-Csv PrivilegedApps.csv -NoTypeInformation
+./Get-PrivilegedApps.ps1 -TenantId <tenant-guid> | Export-Csv PrivilegedApps.csv
 #>
 [CmdletBinding()]
 param([string]$TenantId)
@@ -63,6 +67,7 @@ $connectParams = @{ Scopes = 'Application.Read.All'; NoWelcome = $true }
 if ($TenantId) { $connectParams.TenantId = $TenantId }
 Connect-MgGraph @connectParams
 $HomeTenantId = "$((Get-MgContext).TenantId)"
+Write-Information "Checking tenant $HomeTenantId" -InformationAction Continue
 
 # Says who published the app. Third Party apps are the ones to review first.
 function Get-AppOwnerTenant {
@@ -74,6 +79,7 @@ function Get-AppOwnerTenant {
 }
 
 $appCache = @{}   # principal object Id -> service principal, so each app is fetched once
+$found = 0
 
 foreach ($resourceAppId in $PrivilegedPermissions.Keys) {
     $resource = Get-MgServicePrincipal -Filter "appId eq '$resourceAppId'"
@@ -86,7 +92,10 @@ foreach ($resourceAppId in $PrivilegedPermissions.Keys) {
     $privilegedIds = @{}
     foreach ($name in $PrivilegedPermissions[$resourceAppId]) {
         $appRole = $resource.AppRoles | Where-Object { $_.Value -eq $name }
-        if (-not $appRole) { throw "Permission '$name' not found on '$($resource.DisplayName)'." }
+        if (-not $appRole) {
+            Write-Warning "Permission '$name' not found on '$($resource.DisplayName)'. Skipping."
+            continue
+        }
         $privilegedIds["$($appRole.Id)"] = $name
     }
 
@@ -100,6 +109,7 @@ foreach ($resourceAppId in $PrivilegedPermissions.Keys) {
             $appCache[$grant.PrincipalId] = Get-MgServicePrincipal -ServicePrincipalId $grant.PrincipalId
         }
         $app = $appCache[$grant.PrincipalId]
+        $found++
         [PSCustomObject]@{
             DisplayName    = $app.DisplayName
             AppId          = $app.AppId
@@ -110,3 +120,4 @@ foreach ($resourceAppId in $PrivilegedPermissions.Keys) {
         }
     }
 }
+Write-Information "Done. Found $found privileged permission grant(s) held by apps." -InformationAction Continue

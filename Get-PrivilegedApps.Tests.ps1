@@ -64,9 +64,14 @@ Describe 'Get-PrivilegedApps' {
         $warnings | Should -Not -BeNullOrEmpty
     }
 
-    It 'throws when a listed permission does not exist on the API' {
-        $GraphResource.AppRoles = @()
-        { & $ScriptPath -WarningAction SilentlyContinue } | Should -Throw "*not found on 'Microsoft Graph'*"
+    It 'warns and keeps going when a listed permission does not exist on the API' {
+        $GraphResource.AppRoles = $GraphResource.AppRoles | Where-Object { $_.Value -ne 'Mail.Send' }
+        Mock Get-MgServicePrincipalAppRoleAssignedTo {
+            [PSCustomObject]@{ PrincipalId = 'app-obj'; PrincipalType = 'ServicePrincipal'; AppRoleId = $Roles['Mail.ReadWrite'] }
+        }
+        $rows = & $ScriptPath -WarningVariable warnings -WarningAction SilentlyContinue
+        $rows.Permission | Should -Be 'Mail.ReadWrite'
+        $warnings -join ' ' | Should -BeLike "*'Mail.Send' not found on 'Microsoft Graph'*"
     }
 }
 
