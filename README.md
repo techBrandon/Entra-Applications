@@ -24,7 +24,7 @@ Returns one row per app and role: DisplayName, AppId, AccountEnabled, AppOwnerTe
 ```
 
 AppOwnerTenant is `Home Tenant`, `Microsoft` (IDs in `$MicrosoftTenantIds`), `Third Party` or `Unknown`.
-Both scripts only read data. Sign in with an account that can read directory roles and applications (for example Global Reader).
+Both scripts only read data and reuse your current `Connect-MgGraph` session if one exists (they sign in only when there is none, or when `-TenantId` names a different tenant). Sign in with an account that can read directory roles and applications (for example Global Reader).
 
 ****
 **Get-ClientSecrets.ps1**

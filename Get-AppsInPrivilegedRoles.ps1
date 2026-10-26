@@ -4,7 +4,7 @@
 .SYNOPSIS
 Lists service principals that hold a privileged Entra directory role.
 .NOTES
-Read-only. Requests these Graph scopes: RoleManagement.Read.Directory, Application.Read.All, GroupMember.Read.All.
+Read-only. Uses your current Connect-MgGraph session if there is one, otherwise signs in and requests these Graph scopes: RoleManagement.Read.Directory, Application.Read.All, GroupMember.Read.All.
 Sign in as an account that can read applications and directory roles (for example Global Reader).
 Checks active role assignments only. Roles that are PIM-eligible but not activated are not included.
 .EXAMPLE
@@ -41,12 +41,18 @@ $MicrosoftTenantIds = @(
     '72f988bf-86f1-41af-91ab-2d7cd011db47'  # Microsoft
 )
 
-$connectParams = @{
-    Scopes    = 'RoleManagement.Read.Directory', 'Application.Read.All', 'GroupMember.Read.All'
-    NoWelcome = $true
+# Reuse an existing Graph connection (including one made with your own app) unless -TenantId asks for another tenant
+$scopes = 'RoleManagement.Read.Directory', 'Application.Read.All', 'GroupMember.Read.All'
+$context = Get-MgContext
+if ($context -and (-not $TenantId -or $context.TenantId -eq $TenantId)) {
+    $missing = if ($context.AuthType -eq 'Delegated') { $scopes | Where-Object { $_ -notin $context.Scopes } }
+    if ($missing) { Write-Warning "Current connection may lack: $($missing -join ', '). Results could be incomplete." }
 }
-if ($TenantId) { $connectParams.TenantId = $TenantId }
-Connect-MgGraph @connectParams
+else {
+    $connectParams = @{ Scopes = $scopes; NoWelcome = $true }
+    if ($TenantId) { $connectParams.TenantId = $TenantId }
+    Connect-MgGraph @connectParams
+}
 $HomeTenantId = "$((Get-MgContext).TenantId)"
 Write-Information "Checking tenant $HomeTenantId" -InformationAction Continue
 

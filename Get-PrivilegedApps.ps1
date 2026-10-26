@@ -4,7 +4,7 @@
 .SYNOPSIS
 Lists service principals that hold privileged application permissions.
 .NOTES
-Read-only. Requests these Graph scopes: Application.Read.All.
+Read-only. Uses your current Connect-MgGraph session if there is one, otherwise signs in and requests these Graph scopes: Application.Read.All.
 Sign in as an account that can read applications (for example Global Reader or Application Administrator).
 Checks application permissions only. Delegated permission grants are not included.
 .EXAMPLE
@@ -63,9 +63,18 @@ $MicrosoftTenantIds = @(
     '72f988bf-86f1-41af-91ab-2d7cd011db47'  # Microsoft
 )
 
-$connectParams = @{ Scopes = 'Application.Read.All'; NoWelcome = $true }
-if ($TenantId) { $connectParams.TenantId = $TenantId }
-Connect-MgGraph @connectParams
+# Reuse an existing Graph connection (including one made with your own app) unless -TenantId asks for another tenant
+$scopes = 'Application.Read.All'
+$context = Get-MgContext
+if ($context -and (-not $TenantId -or $context.TenantId -eq $TenantId)) {
+    $missing = if ($context.AuthType -eq 'Delegated') { $scopes | Where-Object { $_ -notin $context.Scopes } }
+    if ($missing) { Write-Warning "Current connection may lack: $($missing -join ', '). Results could be incomplete." }
+}
+else {
+    $connectParams = @{ Scopes = $scopes; NoWelcome = $true }
+    if ($TenantId) { $connectParams.TenantId = $TenantId }
+    Connect-MgGraph @connectParams
+}
 $HomeTenantId = "$((Get-MgContext).TenantId)"
 Write-Information "Checking tenant $HomeTenantId" -InformationAction Continue
 
