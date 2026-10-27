@@ -41,12 +41,11 @@ $MicrosoftTenantIds = @(
     '72f988bf-86f1-41af-91ab-2d7cd011db47'  # Microsoft
 )
 
-# Reuse an existing Graph connection (including one made with your own app) unless -TenantId asks for another tenant
+# Reuse an existing Graph connection unless -TenantId asks for another tenant
 $scopes = 'RoleManagement.Read.Directory', 'Application.Read.All', 'GroupMember.Read.All'
 $context = Get-MgContext
 if ($context -and (-not $TenantId -or $context.TenantId -eq $TenantId)) {
-    $missing = if ($context.AuthType -eq 'Delegated') { $scopes | Where-Object { $_ -notin $context.Scopes } }
-    if ($missing) { Write-Warning "Current connection may lack: $($missing -join ', '). Results could be incomplete." }
+    Write-Information "Using existing Graph session: $($context.Account ?? $context.AppName) ($($context.AuthType))" -InformationAction Continue
 }
 else {
     $connectParams = @{ Scopes = $scopes; NoWelcome = $true }
@@ -59,10 +58,10 @@ Write-Information "Checking tenant $HomeTenantId" -InformationAction Continue
 # Says who published the app. Third Party apps are the ones to review first.
 function Get-AppOwnerTenant {
     param([string]$OwnerId)   # [string] because Graph may return a Guid or a string
-    if (-not $OwnerId) { return 'Unknown' }
-    if ($OwnerId -eq $HomeTenantId) { return 'Home Tenant' }
+    if (-not $OwnerId) { return 'Unknown' } # Null
+    if ($OwnerId -eq $HomeTenantId) { return 'Home Tenant' } # Single-tenant app
     if ($OwnerId -in $MicrosoftTenantIds) { return 'Microsoft' }
-    'Third Party'
+    'Third Party' # Else assume tenant belongs to the vendor of the app
 }
 
 # Translate role names to the IDs Graph uses in assignments
@@ -77,7 +76,7 @@ foreach ($name in $PrivilegedRoles) {
     $privilegedIds["$($definition.Id)"] = $name
 }
 
-# Principal is expanded so each assignment already says whether it is a user, group or app
+# Retrieves all Role assignments. Principal is expanded to identify whether it is a user, group or app
 $assignments = Get-MgRoleManagementDirectoryRoleAssignment -All -ExpandProperty Principal
 $appCache = @{}   # principal Id -> apps, so an app or group holding several roles is fetched once
 $found = 0
@@ -85,7 +84,7 @@ $found = 0
 foreach ($assignment in $assignments) {
     $role = $privilegedIds["$($assignment.RoleDefinitionId)"]
     $principal = $assignment.Principal
-    if (-not $role -or -not $principal) { continue }   # no principal means it was deleted
+    if (-not $role -or -not $principal) { continue }   # skip assignments whose principal no longer exists
 
     # Graph normally sends '@odata.type'; fall back to the .NET type name if the SDK consumed it
     $type = $principal.AdditionalProperties['@odata.type']

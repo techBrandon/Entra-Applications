@@ -24,7 +24,7 @@ Describe 'Get-PrivilegedApps' {
         $appRoles = $Roles.GetEnumerator() | ForEach-Object { [PSCustomObject]@{ Id = $_.Value; Value = $_.Key } }
         $GraphResource = [PSCustomObject]@{ Id = 'res-1'; DisplayName = 'Microsoft Graph'; AppRoles = $appRoles }
         Mock Connect-MgGraph {}
-        Mock Get-MgContext { [PSCustomObject]@{ TenantId = 'home-tenant'; AuthType = 'Delegated'; Scopes = 'Application.Read.All', 'RoleManagement.Read.Directory', 'GroupMember.Read.All' } }
+        Mock Get-MgContext { [PSCustomObject]@{ TenantId = 'home-tenant'; AuthType = 'Delegated'; Account = 'admin@contoso.com'; AppName = $null } }
         Mock Get-MgServicePrincipal { $GraphResource } -ParameterFilter { $Filter -like "*$GraphAppId*" }
         Mock Get-MgServicePrincipal { $null } -ParameterFilter { $Filter -and $Filter -notlike "*$GraphAppId*" }
         Mock Get-MgServicePrincipal { $App } -ParameterFilter { $ServicePrincipalId }
@@ -78,7 +78,7 @@ Describe 'Get-PrivilegedApps' {
 Describe 'Get-PrivilegedApps AppOwnerTenant' {
     BeforeEach {
         Mock Connect-MgGraph {}
-        Mock Get-MgContext { [PSCustomObject]@{ TenantId = 'home-tenant'; AuthType = 'Delegated'; Scopes = 'Application.Read.All', 'RoleManagement.Read.Directory', 'GroupMember.Read.All' } }
+        Mock Get-MgContext { [PSCustomObject]@{ TenantId = 'home-tenant'; AuthType = 'Delegated'; Account = 'admin@contoso.com'; AppName = $null } }
         $graphRoles = $Roles.GetEnumerator() | ForEach-Object { [PSCustomObject]@{ Id = $_.Value; Value = $_.Key } }
         $graph = [PSCustomObject]@{ Id = 'res-1'; DisplayName = 'Microsoft Graph'; AppRoles = $graphRoles }
         Mock Get-MgServicePrincipal { $graph } -ParameterFilter { $Filter -like "*$GraphAppId*" }
@@ -107,7 +107,7 @@ Describe 'Get-PrivilegedApps connection' {
         Mock Connect-MgGraph { $state.Connected = $true }
         Mock Get-MgContext {
             if ($state.Existing -or $state.Connected) {
-                [PSCustomObject]@{ TenantId = 'home-tenant'; AuthType = 'Delegated'; Scopes = 'Application.Read.All', 'RoleManagement.Read.Directory', 'GroupMember.Read.All' }
+                [PSCustomObject]@{ TenantId = 'home-tenant'; AuthType = 'Delegated'; Account = 'admin@contoso.com'; AppName = $null }
             }
         }
         Mock Get-MgServicePrincipal { $null }
@@ -136,17 +136,16 @@ Describe 'Get-PrivilegedApps connection' {
         Should -Invoke Connect-MgGraph -Times 1 -Exactly -ParameterFilter { $TenantId -eq 'other-tenant' }
     }
 
-    It 'warns when a delegated connection lacks a required scope' {
+    It 'says which account the existing session belongs to' {
         $state.Existing = $true
-        Mock Get-MgContext { [PSCustomObject]@{ TenantId = 'home-tenant'; AuthType = 'Delegated'; Scopes = @('User.Read') } }
-        & $ScriptPath -WarningVariable warnings -WarningAction SilentlyContinue
-        $warnings -join ' ' | Should -BeLike '*Application.Read.All*'
+        & $ScriptPath -InformationVariable info -WarningAction SilentlyContinue
+        $info -join ' ' | Should -BeLike '*Using existing Graph session: admin@contoso.com (Delegated)*'
     }
 
-    It 'does not check scopes on an app-only connection' {
+    It 'names the app when the existing session is app-only' {
         $state.Existing = $true
-        Mock Get-MgContext { [PSCustomObject]@{ TenantId = 'home-tenant'; AuthType = 'AppOnly'; Scopes = @() } }
-        & $ScriptPath -WarningVariable warnings -WarningAction SilentlyContinue
-        $warnings -join ' ' | Should -Not -BeLike '*scope*'
+        Mock Get-MgContext { [PSCustomObject]@{ TenantId = 'home-tenant'; AuthType = 'AppOnly'; Account = $null; AppName = 'Audit App' } }
+        & $ScriptPath -InformationVariable info -WarningAction SilentlyContinue
+        $info -join ' ' | Should -BeLike '*Using existing Graph session: Audit App (AppOnly)*'
     }
 }

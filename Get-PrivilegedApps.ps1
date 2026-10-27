@@ -63,12 +63,11 @@ $MicrosoftTenantIds = @(
     '72f988bf-86f1-41af-91ab-2d7cd011db47'  # Microsoft
 )
 
-# Reuse an existing Graph connection (including one made with your own app) unless -TenantId asks for another tenant
+# Reuse an existing Graph connection unless -TenantId asks for another tenant
 $scopes = 'Application.Read.All'
 $context = Get-MgContext
 if ($context -and (-not $TenantId -or $context.TenantId -eq $TenantId)) {
-    $missing = if ($context.AuthType -eq 'Delegated') { $scopes | Where-Object { $_ -notin $context.Scopes } }
-    if ($missing) { Write-Warning "Current connection may lack: $($missing -join ', '). Results could be incomplete." }
+    Write-Information "Using existing Graph session: $($context.Account ?? $context.AppName) ($($context.AuthType))" -InformationAction Continue
 }
 else {
     $connectParams = @{ Scopes = $scopes; NoWelcome = $true }
@@ -81,10 +80,10 @@ Write-Information "Checking tenant $HomeTenantId" -InformationAction Continue
 # Says who published the app. Third Party apps are the ones to review first.
 function Get-AppOwnerTenant {
     param([string]$OwnerId)   # [string] because Graph may return a Guid or a string
-    if (-not $OwnerId) { return 'Unknown' }
-    if ($OwnerId -eq $HomeTenantId) { return 'Home Tenant' }
+    if (-not $OwnerId) { return 'Unknown' } # Null
+    if ($OwnerId -eq $HomeTenantId) { return 'Home Tenant' } # Single-tenant app
     if ($OwnerId -in $MicrosoftTenantIds) { return 'Microsoft' }
-    'Third Party'
+    'Third Party' # Else assume tenant belongs to the vendor of the app
 }
 
 $appCache = @{}   # principal object Id -> service principal, so each app is fetched once
