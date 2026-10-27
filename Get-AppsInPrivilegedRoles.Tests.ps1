@@ -112,17 +112,6 @@ Describe 'Get-AppsInPrivilegedRoles' {
         $rows[0].DisplayName | Should -Be 'Contoso App'
     }
 
-    It 'recognises a service principal by its .NET type when @odata.type is missing' {
-        class MicrosoftGraphServicePrincipal { [hashtable]$AdditionalProperties = @{} }
-        Mock Get-MgRoleManagementDirectoryRoleAssignment {
-            [PSCustomObject]@{
-                PrincipalId = 'principal-1'; RoleDefinitionId = $RoleIds['Global Administrator']
-                DirectoryScopeId = '/'; Principal = [MicrosoftGraphServicePrincipal]::new()
-            }
-        }
-        (& $ScriptPath).DisplayName | Should -Be 'Contoso App'
-    }
-
     It 'looks up an app once when it holds several privileged roles' {
         Mock Get-MgRoleManagementDirectoryRoleAssignment {
             Get-FakeAssignment -Role 'Global Administrator'

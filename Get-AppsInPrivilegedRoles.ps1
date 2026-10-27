@@ -86,14 +86,10 @@ foreach ($assignment in $assignments) {
     $principal = $assignment.Principal
     if (-not $role -or -not $principal) { continue }   # skip assignments whose principal no longer exists
 
-    # Graph normally sends '@odata.type'; fall back to the .NET type name if the SDK consumed it
+    # The expanded principal is a generic directory object; '@odata.type' says what it really is
     $type = $principal.AdditionalProperties['@odata.type']
-    if (-not $type) { $type = "#microsoft.graph.$($principal.GetType().Name -replace '^MicrosoftGraph')" }
     $groupName = $null
-    if ($type -eq '#microsoft.graph.group') {
-        $groupName = $principal.AdditionalProperties['displayName']
-        if (-not $groupName) { $groupName = $assignment.PrincipalId }
-    }
+    if ($type -eq '#microsoft.graph.group') { $groupName = $principal.AdditionalProperties['displayName'] }
 
     if (-not $appCache.ContainsKey($assignment.PrincipalId)) {
         $appCache[$assignment.PrincipalId] = switch ($type) {
