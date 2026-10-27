@@ -5,7 +5,7 @@
 Lists service principals that hold privileged application permissions.
 .NOTES
 Read-only. Uses your current Connect-MgGraph session if there is one, otherwise signs in and requests these Graph scopes: Application.Read.All.
-Sign in as an account that can read applications (for example Global Reader or Application Administrator).
+Sign in as an account that can read applications (for example Global Reader).
 Checks application permissions only. Delegated permission grants are not included.
 .EXAMPLE
 ./Get-PrivilegedApps.ps1 -TenantId <tenant-guid> | Export-Csv PrivilegedApps.csv
@@ -45,7 +45,7 @@ $PrivilegedPermissions = @{
         # Intune can run code on managed devices
         'DeviceManagementRBAC.ReadWrite.All', 'DeviceManagementConfiguration.ReadWrite.All',
         'DeviceManagementApps.ReadWrite.All', 'DeviceManagementManagedDevices.PrivilegedOperations.All',
-        # Broad data access (not tenant takeover, kept from the original list)
+        # Tenant-wide data access
         'Directory.Read.All', 'User.Read.All', 'User.Export.All', 'Calendars.ReadWrite',
         'Mail.ReadWrite', 'Mail.Send', 'Files.ReadWrite.All', 'Sites.ReadWrite.All', 'Sites.FullControl.All'
     )

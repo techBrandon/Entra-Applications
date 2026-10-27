@@ -1,6 +1,10 @@
 #Requires Microsoft.Graph Module
 
 Install-Module Microsoft.Graph
+
+The full suite is not required. Each script needs only these modules, so you can install just those:
+- Get-PrivilegedApps.ps1: Microsoft.Graph.Applications
+- Get-AppsInPrivilegedRoles.ps1: Microsoft.Graph.Applications, Microsoft.Graph.Identity.Governance, Microsoft.Graph.Groups
 ****
 **Get-PrivilegedApps.ps1**
 
