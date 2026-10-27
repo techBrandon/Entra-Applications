@@ -6,7 +6,7 @@ Lists service principals that hold a privileged Entra directory role.
 .NOTES
 Read-only. Uses your current Connect-MgGraph session if there is one, otherwise signs in and requests these Graph scopes: RoleManagement.Read.Directory, Application.Read.All, GroupMember.Read.All.
 Sign in as an account that can read applications and directory roles (for example Global Reader).
-Checks active role assignments only. Roles that are PIM-eligible but not activated are not included.
+Checks active role assignments only. PIM-eligible assignments are not included because service principals cannot activate them.
 .EXAMPLE
 ./Get-AppsInPrivilegedRoles.ps1 -TenantId <tenant-guid> | Format-Table
 #>

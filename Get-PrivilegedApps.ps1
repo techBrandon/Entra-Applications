@@ -47,7 +47,7 @@ $PrivilegedPermissions = @{
         'DeviceManagementApps.ReadWrite.All', 'DeviceManagementManagedDevices.PrivilegedOperations.All',
         # Broad data access (not tenant takeover, kept from the original list)
         'Directory.Read.All', 'User.Read.All', 'User.Export.All', 'Calendars.ReadWrite',
-        'Mail.ReadWrite', 'Mail.Send', 'Files.ReadWrite.All', 'Sites.ReadWrite.All'
+        'Mail.ReadWrite', 'Mail.Send', 'Files.ReadWrite.All', 'Sites.ReadWrite.All', 'Sites.FullControl.All'
     )
     # Windows Azure Active Directory (Azure AD Graph)
     '00000002-0000-0000-c000-000000000000' = @(
