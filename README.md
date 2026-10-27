@@ -27,15 +27,6 @@ AppOwnerTenant is `Home Tenant`, `Microsoft` (IDs in `$MicrosoftTenantIds`), `Th
 Both scripts only read data and reuse your current `Connect-MgGraph` session if one exists (they sign in only when there is none, or when `-TenantId` names a different tenant). Sign in with an account that can read directory roles and applications (for example Global Reader).
 
 ****
-**Get-ManagedIdentities.ps1**
-
-Lists every managed identity service principal in the tenant with its appOwnerOrganizationId.
-
-```powershell
-./Get-ManagedIdentities.ps1 -TenantId <tenant-guid> | Export-Csv ManagedIdentities.csv
-```
-
-****
 **Get-ClientSecrets.ps1**
 
 Reports on Applications and their client secrets.
